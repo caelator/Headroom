@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose an improvement with a concrete use case.
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What decision or workflow would this help? Use examples without private account information.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Proposed outcome
+      description: Describe the behavior and how you would know it works.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Data source and alternatives
+      description: For a new provider or metric, link public documentation and state the reported units/window if known. Never include tokens, cookies, or raw account replies.

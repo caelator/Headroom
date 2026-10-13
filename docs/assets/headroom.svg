@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="title desc">
+  <title id="title">Headroom</title>
+  <desc id="desc">Your AI plans. One local dashboard. An abstract capacity gauge accompanies the Headroom wordmark.</desc>
+  <rect width="1280" height="320" rx="24" fill="#0e1116"/>
+  <path d="M900 0H1280V320H720Z" fill="#151c29"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <text x="64" y="130" fill="#f4f6fc" font-size="72" font-weight="700" letter-spacing="-3">Headroom</text>
+    <text x="68" y="182" fill="#aebbd2" font-size="25">Your AI plans. One local dashboard.</text>
+    <text x="68" y="257" fill="#8fb1ff" font-size="16" letter-spacing="2">QUOTA · PACE · RESETS</text>
+  </g>
+  <g transform="translate(940 160)" fill="none" stroke-width="19">
+    <circle r="98" stroke="#27364f"/>
+    <path d="M-69.3 69.3A98 98 0 1 1 69.3 69.3" stroke="#8fb1ff" stroke-linecap="round"/>
+    <path d="M0 0L45-47" stroke="#c8d9ff" stroke-width="9" stroke-linecap="round"/>
+    <circle r="10" fill="#c8d9ff" stroke="none"/>
+  </g>
+</svg>

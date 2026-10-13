@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a reproducible problem with Headroom.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use synthetic examples and sanitized status/error codes. Do not include credentials, cookies, raw provider responses, private databases, raw launchd environments, or personal account details. Report security vulnerabilities through Security → Report a vulnerability.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "Commit hash or project version"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS, Python, Node.js, and relevant provider client versions. Omit account identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the view or provider involved and a minimal reproduction.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Describe the difference and whether it concerns current readings, history, or estimates.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Optional status/error codes from scripts/diagnostics.py, or local test results. Review and redact before sharing.

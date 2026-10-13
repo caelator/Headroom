@@ -1,0 +1,26 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Execute the actual dashboard functions without starting DOM/network polling.
+const source=fs.readFileSync('web/app.js','utf8').replace('  init();','  globalThis.check={state,winState,forecastFor,headlineFor,expiredSig,splitSegments,tierInfo,effStatus,hashView,historyLink};');
+const ctx={console,URL,URLSearchParams,Intl,Date,location:{hash:''}};vm.createContext(ctx);vm.runInContext(source,ctx);
+const c=ctx.check,now=Date.now();
+c.state.data={settings:{critical_remaining_pct:10,warn_remaining_pct:25}};
+const w={id:'weekly',remaining_pct:10,used_pct:90,status:'fresh',observed_at:new Date(now).toISOString(),fresh_until:new Date(now+1000).toISOString(),resets_at:new Date(now+3600000).toISOString(),velocity:{confidence:'observed',pct_per_hour:10}};
+const p={status:'verified',remaining_pct:10,windows:[w],plan:{}};
+assert.equal(c.winState(w,p),'fresh');assert.equal(c.forecastFor({w,st:'fresh'}).kind,'observed');
+const before=c.expiredSig({providers:[p]});w.fresh_until=new Date(now-1).toISOString();
+assert.notEqual(c.expiredSig({providers:[p]}),before);assert.equal(c.winState(w,p),'stale');assert.equal(c.effStatus(p),'stale');
+assert.equal(c.forecastFor({w,st:c.winState(w,p)}).kind,'stale');
+assert.equal(c.headlineFor(p,{w,st:'stale'},[{w,st:'stale'}]).kind,'stale');
+w.fresh_until=new Date(now+1000).toISOString();w.resets_at=new Date(now-1).toISOString();assert.equal(c.winState(w,p),'expired');
+w.resets_at=new Date(now+3600000).toISOString();c.state.offline=true;assert.equal(c.winState(w,p),'stale');
+assert.notEqual(c.headlineFor(p,{w,st:'stale'},[{w,st:'stale'}]).kind,'value');c.state.offline=false;
+assert.equal(c.forecastFor({w:{...w,remaining_pct:0},st:'fresh'}).kind,'exhausted');
+assert.equal(c.tierInfo({plan:{declared_tier:'Highest plan (user reported)',verified_tier:'Cursor Pro',verification:'provider'}}).label,'Cursor Pro');
+const segments=c.splitSegments([{t:1,v:90,reset:1000},{t:500,v:80,reset:1000},{t:1500,v:100,reset:3000},{t:99999,v:90,reset:3000}],10000);
+assert.equal(segments.segs.length,3);
+ctx.location.hash='#history?provider=muse&hours=72&metric=used';
+assert.equal(c.hashView(),'history');assert.equal(c.state.history.provider,'muse');assert.equal(c.state.history.hours,72);assert.equal(c.state.history.metric,'used');
+assert.equal(c.historyLink('muse'),'#history?provider=muse&hours=72&metric=used');
+ctx.location.hash='#models?days=30';assert.equal(c.hashView(),'models');assert.equal(c.state.local.days,30);
+console.log('Dashboard expiry, reset, offline, tier and history checks passed.');

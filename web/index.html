@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <title>Headroom</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Headroom</span>
+    </div>
+    <nav class="tabs" aria-label="Primary">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#history" data-view="history">History</a>
+      <a href="#models" data-view="models">Models</a>
+      <a href="#settings" data-view="settings">Settings</a>
+    </nav>
+    <div class="toolbar">
+      <button type="button" class="btn" id="refresh-btn" data-action="refresh">Refresh now</button>
+      <a class="btn" id="export-link" href="/api/export.csv" download>Export CSV</a>
+    </div>
+  </header>
+
+  <div class="statusbar">
+    <p id="status-line" class="status-line">Loading snapshot…</p>
+    <div id="banner" class="banner" role="status" hidden></div>
+  </div>
+
+  <main id="main" class="app" tabindex="-1">
+
+    <section id="view-overview" class="view" data-view="overview" aria-labelledby="t-overview">
+      <h1 id="t-overview" class="view-title" tabindex="-1">Plan overview</h1>
+      <p class="lede">Provider-reported quota remaining, per window. Each plan is separate: percentages are never added or averaged across plans.</p>
+      <ul id="summary" class="summary" aria-label="Plan status summary"></ul>
+      <div id="notices"></div>
+      <div id="glance" class="glance-grid" aria-label="All plans at a glance"></div>
+      <div id="cards" class="cards" aria-busy="true"></div>
+      <section class="strip" aria-labelledby="h-local">
+        <div>
+          <h2 id="h-local">Local Codex model accounting</h2>
+          <p id="local-summary" class="muted">Loading local token counters…</p>
+        </div>
+        <a class="btn" href="#models">Open models &amp; tokens</a>
+      </section>
+    </section>
+
+    <section id="view-history" class="view" data-view="history" aria-labelledby="t-history" hidden>
+      <h1 id="t-history" class="view-title" tabindex="-1">Quota history</h1>
+      <p class="lede">Snapshots of provider-reported quota per window over time. This is quota percent only, not token or dollar spend.</p>
+      <div class="controls" role="group" aria-label="History controls">
+        <label class="ctl">Provider
+          <select id="hist-provider"></select>
+        </label>
+        <label class="ctl">Range
+          <select id="hist-hours">
+            <option value="6">Last 6 hours</option>
+            <option value="24">Last 24 hours</option>
+            <option value="72">Last 3 days</option>
+            <option value="168">Last 7 days</option>
+          </select>
+        </label>
+        <label class="ctl">Metric
+          <select id="hist-metric">
+            <option value="remaining">Remaining %</option>
+            <option value="used">Used %</option>
+          </select>
+        </label>
+        <button type="button" class="btn" id="hist-reload">Reload</button>
+      </div>
+      <p id="hist-status" class="muted small" role="status"></p>
+      <div id="hist-chart" class="chart-box"></div>
+      <p id="hist-readout" class="readout" aria-live="off">Hover the chart, or focus it and use the arrow keys, to read values.</p>
+      <p id="hist-sr" class="sr-only" aria-live="polite"></p>
+      <ul id="hist-legend" class="legend" aria-label="Chart legend"></ul>
+      <p id="hist-note" class="fine"></p>
+      <div id="hist-table"></div>
+    </section>
+
+    <section id="view-models" class="view" data-view="models" aria-labelledby="t-models" hidden>
+      <h1 id="t-models" class="view-title" tabindex="-1">Models &amp; tokens</h1>
+      <p class="lede">Local token and request counters from this machine. This is a separate evidence class from plan quota: it is not a percentage, cannot be compared with remaining quota, and unknown usage is shown as unknown rather than zero.</p>
+      <div class="controls" role="group" aria-label="Local usage controls">
+        <label class="ctl">Period
+          <select id="models-days">
+            <option value="1">Today (Bogota)</option>
+            <option value="7">Past 7 days</option>
+            <option value="30">Past 30 days</option>
+            <option value="0">All time</option>
+          </select>
+        </label>
+        <button type="button" class="btn" id="models-reload">Reload</button>
+      </div>
+      <p id="models-status" class="muted small" role="status"></p>
+      <div id="models-totals" class="tiles"></div>
+      <div id="models-velocity"></div>
+      <div id="models-daily"></div>
+      <div id="models-table"></div>
+      <div id="models-warnings"></div>
+    </section>
+
+    <section id="view-settings" class="view" data-view="settings" aria-labelledby="t-settings" hidden>
+      <h1 id="t-settings" class="view-title" tabindex="-1">Connections &amp; settings</h1>
+
+      <section class="panel" aria-labelledby="h-conn">
+        <h2 id="h-conn">Connections</h2>
+        <p class="lede">Declared tiers come from local configuration and are not trusted until the provider confirms them. Headroom never asks for credentials here: it reuses sessions that are already signed in. If a plan needs sign-in, use its official account portal.</p>
+        <div id="conn-list" class="conn-list"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-set">
+        <h2 id="h-set">Warnings &amp; polling</h2>
+        <form id="settings-form" novalidate>
+          <div class="field">
+            <label for="set-warn">Warn when remaining is at or below (%)</label>
+            <input id="set-warn" type="number" inputmode="decimal" step="any" min="0" max="100" required aria-describedby="set-warn-help">
+            <p class="help" id="set-warn-help">Quota windows at or below this value are highlighted amber.</p>
+          </div>
+          <div class="field">
+            <label for="set-crit">Critical when remaining is at or below (%)</label>
+            <input id="set-crit" type="number" inputmode="decimal" step="any" min="0" max="100" required aria-describedby="set-crit-help">
+            <p class="help" id="set-crit-help">Must be lower than the warning threshold. Highlighted red.</p>
+          </div>
+          <div class="field">
+            <label for="set-interval">Background sync interval (seconds)</label>
+            <input id="set-interval" type="number" inputmode="numeric" step="1" min="10" max="60" required aria-describedby="set-interval-help">
+            <p class="help" id="set-interval-help">How often the local service polls providers. This page re-reads the local snapshot every 10 seconds while visible, independent of this value.</p>
+          </div>
+          <p id="settings-error" class="form-error" role="alert" hidden></p>
+          <div class="actions">
+            <button type="submit" class="btn btn-primary" id="settings-save">Save settings</button>
+            <button type="button" class="btn" id="settings-reset">Revert</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="h-diag">
+        <h2 id="h-diag">Diagnostics &amp; export</h2>
+        <div class="actions">
+          <button type="button" class="btn" id="diag-refresh" data-action="refresh">Refresh now</button>
+          <a class="btn" id="diag-export" href="/api/export.csv" download>Export snapshot history (CSV)</a>
+        </div>
+        <h3>Local service</h3>
+        <div id="diag-meta"></div>
+        <h3>Source status</h3>
+        <div id="diag-sources"></div>
+        <h3>Service notices</h3>
+        <div id="diag-warnings"></div>
+      </section>
+    </section>
+
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
