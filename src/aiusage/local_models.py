@@ -443,13 +443,55 @@ class Importer:
                 db.execute('INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?)',
                            (str(path), inode, offset, prefix, json.dumps(state), errors))
 
+    def _checkpoints(self):
+        """Read every file checkpoint in one bulk read for a scan.
+
+        This is only a preflight snapshot.  Changed files still re-read their
+        checkpoint inside scan_file's write transaction, where that value is
+        authoritative under concurrent importer activity.
+        """
+        with self.store.connect() as db:
+            return {row['path']: dict(row) for row in db.execute(
+                'SELECT path,inode,offset,prefix FROM files')}
+
+    def _unchanged(self, path, checkpoint):
+        """Return True only for an inode/prefix/offset-identical file.
+
+        This does the filesystem work outside a database connection.  Size
+        alone is not enough: an in-place rewrite of the same size, or a
+        truncated and regrown file, must fall through to scan_file whenever
+        its leading bytes no longer match the checkpoint prefix.
+        """
+        if checkpoint is None:
+            return False
+        stat = path.stat()
+        if checkpoint['offset'] != stat.st_size:
+            return False
+        if checkpoint['inode'] != f'{stat.st_dev}:{stat.st_ino}':
+            return False
+        with path.open('rb') as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (
+                    stat.st_dev, stat.st_ino, stat.st_size):
+                return False
+            prefix = hashlib.sha256(handle.read(min(stat.st_size, 256))).hexdigest()
+        return prefix == checkpoint['prefix']
+
     def scan(self):
         self.store.set_meta('scanning', True)
         try:
             paths = self.paths()
+            try:
+                checkpoints = self._checkpoints()
+            except sqlite3.Error:
+                # Fall back to scan_file's authoritative per-file lookup; its
+                # failures are counted below as they were before this preflight.
+                checkpoints = {}
             failures = 0
             for path in paths:
                 try:
+                    if self._unchanged(path, checkpoints.get(str(path))):
+                        continue
                     self.scan_file(path)
                 except (OSError, sqlite3.Error):
                     # Preserve existing checkpoints and retry; never log file contents.

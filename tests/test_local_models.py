@@ -453,6 +453,54 @@ class CheckpointTests(TempCase):
         self.assertEqual(len(self.rows()), 2)
         self.assertEqual(self.summary()['totals']['total_tokens'], 35)
 
+    def test_scan_uses_bounded_connections_for_many_unchanged_files(self):
+        for index in range(30):
+            self.put(self.sessions / ('rollout-%02d.jsonl' % index), jsonl(
+                session_meta('sess-%d' % index), turn_context('gpt-5'),
+                receipt('resp_%d' % index, usage(10, 5), n=1)))
+        self.importer.scan()
+        before = self.rows()
+        self.assertEqual(len(before), 30)
+
+        with mock.patch.object(self.store, 'connect', wraps=self.store.connect) as connect:
+            self.importer.scan()
+            connection_calls = connect.call_count
+
+        # The old scan opened SQLite once per unchanged file (here, 30 times)
+        # in addition to its scan-level metadata work.  A bulk checkpoint read
+        # keeps this independent of the number of unchanged files.
+        self.assertLessEqual(connection_calls, 10)
+        self.assertEqual(self.rows(), before)
+
+    def test_scan_still_imports_appends_and_same_inode_prefix_rewrites(self):
+        appended = self.sessions / 'appended.jsonl'
+        rewritten = self.sessions / 'rewritten.jsonl'
+        head = jsonl(session_meta('sess-a'), turn_context('gpt-5'))
+        self.put(appended, head + jsonl(receipt('resp_before_append', usage(10, 5), n=1)))
+        self.put(rewritten, head + jsonl(receipt('resp_before_rewrite', usage(10, 5), n=1)))
+        self.importer.scan()
+        self.assertEqual(set(self.by_key()), {'r:resp_before_append', 'r:resp_before_rewrite'})
+
+        with appended.open('ab') as handle:
+            handle.write(jsonl(receipt('resp_appended', usage(20, 5), n=2)))
+        inode = rewritten.stat().st_ino
+        replacement = jsonl(session_meta('sess-b'), turn_context('gpt-5'),
+                            receipt('resp_rewritten_1', usage(11, 5), n=2),
+                            receipt('resp_rewritten_2', usage(12, 5), n=3))
+        rewritten.write_bytes(replacement)
+        self.assertEqual(rewritten.stat().st_ino, inode)
+        self.assertGreater(len(replacement), len(head))
+
+        self.importer.scan()
+
+        self.assertEqual(set(self.by_key()), {
+            'r:resp_before_append', 'r:resp_before_rewrite',
+            'r:resp_appended', 'r:resp_rewritten_1', 'r:resp_rewritten_2'})
+        self.assertEqual(self.file_record(appended)['offset'], appended.stat().st_size)
+        record = self.file_record(rewritten)
+        self.assertEqual((record['offset'], record['state']['session_id']),
+                         (rewritten.stat().st_size, 'sess-b'))
+
     def test_truncated_file_is_reread_from_the_start(self):
         path = self.sessions / 'rollout.jsonl'
         head = jsonl(session_meta(), turn_context('gpt-5'))

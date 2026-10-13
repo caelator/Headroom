@@ -43,6 +43,25 @@ class QuotaHistoryTests(unittest.TestCase):
             self.importer.scan()
         self.assertEqual(scan.call_count,2)
 
+    def test_bulk_scan_unchanged_files_uses_one_checkpoint_connection(self):
+        folder=self.root/'sessions';folder.mkdir()
+        for n in range(30):(folder/f'{n}.jsonl').write_text(records('first'))
+        with patch('aiusage.codex_history.codex_account_id',return_value='first'):
+            self.importer.scan()
+            with patch.object(self.store,'connect',wraps=self.store.connect) as connect:
+                self.importer.scan()
+            self.assertEqual(connect.call_count,1)
+            # An append still enters the write path and imports the new quota.
+            file=folder/'0.jsonl'
+            with file.open('a') as stream:stream.write(records('first',41))
+            self.importer.scan()
+            with self.store.connect() as db:
+                self.assertTrue(db.execute("SELECT 1 FROM observations WHERE used_pct='41' OR used_pct='41.0'").fetchone())
+            # A same-inode prefix rewrite is checked even through bulk preflight.
+            file.write_text(records('other',62)+' '*100+'\n');self.importer.scan()
+            with self.store.connect() as db:
+                self.assertFalse(db.execute("SELECT 1 FROM observations WHERE used_pct='62' OR used_pct='62.0'").fetchone())
+
 
     def test_authenticated_global_slots_write_duration_qualified_ids_only(self):
         values=[{'type':'session_meta','payload':{'creator_account_id':'first'}},

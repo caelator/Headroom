@@ -2,33 +2,50 @@
 from pathlib import Path
 import json
 import hashlib
+import os
 import sqlite3
 from datetime import datetime, timezone
 from .analytics import iso, percentage
 from .identity import CODEX_HOME, codex_account_id
+
+_UNREAD=object()
+
+
+def _resume(old,inode,size,prefix):
+    offset,state=0,{}
+    if old and old['inode']==inode and old['offset']<=size:
+        try:previous=json.loads(old['state'])
+        except ValueError:previous={}
+        if isinstance(previous,dict) and previous.get('_prefix')==prefix:
+            offset,state=old['offset'],previous
+    state['_prefix']=prefix
+    return offset,state
 
 
 class CodexQuotaHistory:
     MAX_LINE=32*1024*1024
     def __init__(self,store,home=CODEX_HOME): self.store,self.home=store,Path(home)
 
-    def scan_file(self,path,account):
+    def scan_file(self,path,account,checkpoint=_UNREAD):
         stat=path.stat();inode=f'{stat.st_dev}:{stat.st_ino}'
-        with self.store.connect() as db:
-            old=db.execute('SELECT * FROM imports WHERE path=?',(str(path),)).fetchone()
-        offset,state=0,{}
+        if checkpoint is _UNREAD:
+            with self.store.connect() as db:
+                checkpoint=db.execute('SELECT * FROM imports WHERE path=?',(str(path),)).fetchone()
         with path.open('rb') as f:
+            # Bind the preflight to the file actually opened, including a
+            # replacement between path.stat() and open().
+            stat=os.fstat(f.fileno());inode=f'{stat.st_dev}:{stat.st_ino}'
             prefix=hashlib.sha256(f.read(min(stat.st_size,256))).hexdigest()
-            if old and old['inode']==inode and old['offset']<=stat.st_size:
-                try:previous=json.loads(old['state'])
-                except ValueError:previous={}
-                if isinstance(previous,dict) and previous.get('_prefix')==prefix:
-                    offset,state=old['offset'],previous
-            state['_prefix']=prefix
+            offset,state=_resume(checkpoint,inode,stat.st_size,prefix)
             if offset==stat.st_size:return
-            f.seek(offset)
             read_bytes=0
             with self.store.lock,self.store.connect() as db:
+                # Changed files use the latest committed checkpoint under the
+                # writer lock; the bulk snapshot is only an unchanged preflight.
+                old=db.execute('SELECT * FROM imports WHERE path=?',(str(path),)).fetchone()
+                offset,state=_resume(old,inode,stat.st_size,prefix)
+                if offset==stat.st_size:return
+                f.seek(offset)
                 while read_bytes<16*1024*1024:
                     pos=f.tell();line=f.readline(self.MAX_LINE+1)
                     if not line:break
@@ -75,10 +92,17 @@ class CodexQuotaHistory:
         account_id=codex_account_id()
         if not account_id:return
         account=self.store.fingerprint('codex|'+account_id)
+        # One snapshot of checkpoints prevents hundreds of SQLite opens every
+        # five seconds just to rediscover that archived files are unchanged.
+        # scan_file still checks inode, size and prefix against each real file.
+        try:
+            with self.store.connect() as db:
+                checkpoints={row['path']:dict(row) for row in db.execute('SELECT * FROM imports')}
+        except sqlite3.Error:checkpoints=None
         files=[]
         for path in list((self.home/'sessions').rglob('*.jsonl'))+list((self.home/'archived_sessions').rglob('*.jsonl')):
             try:files.append((path.stat().st_mtime,path))
             except OSError:continue
         for _,path in sorted(files,key=lambda item:item[0],reverse=True):
-            try:self.scan_file(path,account)
+            try:self.scan_file(path,account,checkpoints.get(str(path)) if checkpoints is not None else _UNREAD)
             except (OSError,ValueError,sqlite3.Error):continue

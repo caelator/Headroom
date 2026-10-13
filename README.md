@@ -27,7 +27,7 @@ Headroom brings **Codex / ChatGPT, Muse, z.ai, Cursor, Antigravity, and Claude**
 <!-- headroom:snapshot:start -->
 **Current source:** version `0.1.0` · 6 built-in provider collectors · readings expire after 90 seconds · default polling 30 seconds.
 
-<sub>These facts are refreshed from the committed source. Source fingerprint: `85ae9f5d0c6f77cb`.</sub>
+<sub>These facts are refreshed from the committed source. Source fingerprint: `4ca0c2525280dc49`.</sub>
 <!-- headroom:snapshot:end -->
 
 ## What you get
