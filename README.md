@@ -37,7 +37,7 @@ Headroom brings **Codex / ChatGPT, Muse, z.ai, Cursor, Antigravity, and Claude**
 - **macOS 13+** for the supported provider integrations and menu companion.
 - **Python 3.11+**. The Python runtime uses the standard library; there are no third-party runtime dependencies.
 - **Node.js** to run the local JavaScript checks.
-- **[CodexBar](https://github.com/steipete/CodexBar)** CLI at `/opt/homebrew/bin/codexbar` for Codex, z.ai, Cursor, and Antigravity feeds.
+- **Codex, Cursor, and Antigravity**, signed in through their official clients, for the providers you use. Headroom includes its provider collectors; no CodexBar installation is needed.
 - **Muse Code** and **Claude Code**, signed in through their official clients, for their direct OAuth collectors.
 - **Xcode command-line tools** if you want the native menu companion (`xcode-select --install`).
 
@@ -69,11 +69,11 @@ The menu installer replaces the owned `com.xxx.codex-usage-menu` companion and b
 
 | Provider | Quota source | Connection setup |
 | --- | --- | --- |
-| **Codex / ChatGPT** | CodexBar OAuth usage feed | Sign in to Codex and configure CodexBar. |
+| **Codex / ChatGPT** | Built-in Codex OAuth usage collector | Sign in to Codex. |
 | **Muse** | Direct Muse Code account quota endpoint | Run `muse login`, then **Refresh Muse connection** in Settings. |
-| **z.ai** | CodexBar coding-plan API | Configure the existing coding-plan API key in CodexBar. |
-| **Cursor** | CodexBar authenticated web usage | Sign in through Cursor / CodexBar. |
-| **Antigravity** | CodexBar local authenticated app feed | Keep the Antigravity app signed in. |
+| **z.ai** | Built-in coding-plan quota API | Configure the existing coding-plan API key in the environment or supported coding client. |
+| **Cursor** | Built-in authenticated usage APIs | Sign in to the Cursor desktop app. |
+| **Antigravity** | Built-in local app quota endpoint | Keep the Antigravity app signed in and running. |
 | **Claude** | Direct Claude OAuth usage and profile endpoints | Sign in to Claude Code; existing credential renewal is picked up on subsequent polls. |
 
 Credentials stay in the provider's existing app or Keychain. Headroom does not ask you to paste passwords, tokens, cookies, or API keys into the dashboard. Provider tier labels are distinct from user-declared plan claims; a verified tier does not establish that it is the provider's highest available plan.
@@ -120,6 +120,8 @@ Headroom does not retain conversation text, raw account profiles, credentials, o
 | [Measurement contracts](docs/metrics.md) | Units, freshness, reset continuity, forecasting, and receipt provenance. |
 | [Operations and recovery](docs/operations.md) | Installation, safe diagnostics, data backup, and rollback. |
 | [Muse collector protocol](docs/muse-protocol.md) | Direct OAuth integration and sanitized response handling. |
+| [Built-in provider collectors](docs/providers.md) | Authentication sources, integration boundaries, and migration. |
+| [Third-party notices](THIRD_PARTY_NOTICES.md) | CodexBar protocol attribution and upstream license. |
 | [Contributing](CONTRIBUTING.md) | Source layout, local checks, and changes to provider adapters. |
 | [Security policy](SECURITY.md) | Private vulnerability reports and information to omit. |
 | [Bug reports](https://github.com/caelator/Headroom/issues/new?template=bug_report.yml) | Reproducible problems with sanitized diagnostics. |

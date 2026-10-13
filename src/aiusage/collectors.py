@@ -1,18 +1,18 @@
 """Concurrent authenticated quota collection with one owner and bounded retries."""
-from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 from .analytics import iso
-from .codexbar import collect
+from .codex import collect as collect_codex
+from .cursor import collect as collect_cursor
+from .zai import collect as collect_zai
+from .antigravity import collect as collect_antigravity
 from .claude import collect as collect_claude
-from .identity import identity_hasher, configured_credential_scope
 from .registry import PROVIDERS
 
 
 class Collectors:
     def __init__(self, store, muse_collector=None):
         self.store=store
-        self.hasher=identity_hasher(store)
         self.muse_collector=muse_collector
         self.stop=threading.Event()
         self.wakeup=threading.Event()
@@ -39,13 +39,9 @@ class Collectors:
             elif provider=='claude':
                 result=collect_claude(self.store)
             else:
-                result=collect(provider,self.hasher,timeout_seconds=45)
-                if provider=='antigravity':
-                    grouped=[w for w in result.get('windows',[]) if w.get('label','').startswith(('Gemini ','Claude/GPT '))]
-                    if grouped:result['windows']=grouped  # Slot bars are aliases of these explicitly named groups.
-                if not result.get('account_ref'):
-                    credential=configured_credential_scope(provider)
-                    if credential:result['account_ref']=self.store.fingerprint(provider+'|configured|'+credential)
+                adapter={'codex':collect_codex,'cursor':collect_cursor,
+                         'zai':collect_zai,'antigravity':collect_antigravity}[provider]
+                result=adapter(self.store)
                 if not result.get('account_ref') and result.get('windows'):
                     result['status']='partial'
                     result['error']={'code':'identity_unverified','message':'Quota is reported but account continuity could not be verified; forecasts are unavailable.'}

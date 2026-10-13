@@ -5,10 +5,13 @@ The dashboard service is `com.xxx.aiusage`; the owned menu companion remains `co
 ```sh
 curl --fail http://127.0.0.1:8793/health
 python3 scripts/diagnostics.py
+python3 scripts/diagnostics.py --probe
 launchctl kickstart -k gui/$(id -u)/com.xxx.aiusage
 ```
 
 The health response is a portfolio of six providers with independent status, last attempt, observation age, auth method and error code. HTTP success means the local service responds; it does not establish that every provider has live quota. A provider failure keeps only explicitly stale last-known observations, hides current percentages and retries automatically. Authentication renewal is performed in each provider's official app; this dashboard does not refresh or overwrite credentials.
+
+All collectors are built into Headroom. CodexBar is not an installation or runtime dependency. The optional `--probe` diagnostic checks the built-in adapters in isolated temporary storage and reports sanitized statuses without restarting the service. See [provider collectors](providers.md) for native credential sources and compatibility with existing configuration.
 
 Muse is integrated directly. The collector reads the existing CLI-owned OAuth credential from the macOS Keychain item `ai.meta.dev.credentials` / `meta`, then POSTs an empty body to `https://api.meta.ai/muse-code/key` with `x-api-version: 1.0.0`. This matches the installed Muse Code 1.4.2 protocol. Its response has explicit coding quota and the active tier; the returned key, payment details and profile fields are never persisted. Live checks confirmed that repeated requests returned the existing key and that the original plan key remained valid. No extension, browser cookie extraction or model inference is required.
 

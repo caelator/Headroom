@@ -19,5 +19,20 @@ class DiagnosticsTests(unittest.TestCase):
         with patch.object(diagnostics.subprocess,'run') as run:
             run.return_value.returncode=1;result=diagnostics.agent_status('service')
         self.assertFalse(result['registered'])
+    def test_probe_reports_only_allowlisted_fields(self):
+        with patch.object(diagnostics.importlib,'import_module') as load:
+            load.return_value.collect.return_value={'id':'codex','status':'partial','source':'codex_oauth',
+                'windows':[],'account_ref':'private-identity','access_token':'private-token',
+                'profile':{'email':'private@example.invalid'}}
+            result=diagnostics.probe('codex')
+        self.assertEqual(len(result['providers']),1)
+        self.assertEqual(result['providers'][0]['source'],'codex_oauth')
+        self.assertEqual(set(result['providers'][0]),{'id','status','source','window_count','fresh_window_count','error_code'})
+        self.assertNotIn('private-',json.dumps(result));self.assertNotIn('private@example.invalid',json.dumps(result))
+    def test_probe_failure_never_echoes_exception(self):
+        with patch.object(diagnostics.importlib,'import_module',side_effect=OSError('private-token')):
+            result=diagnostics.probe('codex')
+        self.assertEqual(result['providers'][0]['error_code'],'collector_error')
+        self.assertNotIn('private-token',json.dumps(result))
 
 if __name__=='__main__':unittest.main()
