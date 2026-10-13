@@ -135,8 +135,11 @@ def normalize(summary,user,store,subject,observed_at=None,legacy_ref=None,reques
     minutes=int((end-start).total_seconds()/60) if start and end and end>start else None
     if minutes is not None and not 0<minutes<=5270400:minutes=None
     individual=summary.get('individualUsage');individual=individual if isinstance(individual,dict) else {}
-    plan_reported=isinstance(individual.get('plan'),dict)
     plan=individual.get('plan');plan=plan if isinstance(plan,dict) else {}
+    # An empty or unrecognised plan block reports no plan allowance; it must
+    # not suppress the individual/team fallback windows below.
+    plan_fields={'totalPercentUsed','used','limit','autoPercentUsed','apiPercentUsed','enabled'}
+    plan_reported=bool(plan_fields.intersection(plan))
     windows=[]
     def add(key,label,used):
         windows.append({'id':key,'label':label,'used_pct':float(used) if used is not None else None,
@@ -153,10 +156,10 @@ def normalize(summary,user,store,subject,observed_at=None,legacy_ref=None,reques
     if plan_reported:add('primary','Included plan',total)
     for key,label,field in [('secondary','Cursor models','autoPercentUsed'),('tertiary','Third-party models','apiPercentUsed')]:
         if field in plan:add(key,label,_pct(plan[field]) if plan.get('enabled') is not False else None)
-    if not plan and isinstance(individual.get('overall'),dict):
+    if not plan_reported and isinstance(individual.get('overall'),dict):
         add('individual-overall','Individual cap',ratio(individual['overall']))
     team=summary.get('teamUsage')
-    if not plan and not individual.get('overall') and isinstance(team,dict) and isinstance(team.get('pooled'),dict):
+    if not plan_reported and not individual.get('overall') and isinstance(team,dict) and isinstance(team.get('pooled'),dict):
         add('team-pooled','Shared team pool',ratio(team['pooled']))
     if requests is not None and isinstance(requests,dict):
         block=requests.get('gpt4')

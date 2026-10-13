@@ -18,7 +18,7 @@ If your Python 3.11+ executable has another name, set `HEADROOM_PYTHON` in the e
 
 The pre-commit hook refreshes the README's marked source blocks from the **staged index**. These blocks describe package version, Python/macOS requirements, provider catalog and implementation links, polling/freshness constants, and the native floating-widget capability. It stages the generated README with the source change. Unstaged source changes are excluded, and an independently edited working README is preserved byte for byte.
 
-The pre-push hook reads every ref Git actually intends to publish, peels annotated tags, and checks each exact committed revision. A correct working README cannot hide a stale pushed commit. Branch deletions do not need a document snapshot. A push is blocked when generated facts are stale, linked files are missing, source/asset paths are symbolic links, or the synthetic dashboard preview no longer matches the frontend source receipt. Hosted workflows require policy review; push/PR/schedule CI remains prohibited.
+The pre-push hook reads every ref Git actually intends to publish, peels annotated tags, and checks each exact committed revision. A correct working README cannot hide a stale pushed commit. Branch deletions do not need a document snapshot. A push is blocked when generated facts are stale, linked files are missing, source/asset paths are symbolic links, or a synthetic dashboard/widget preview no longer matches its frontend source receipt. Hosted workflows require policy review; push/PR/schedule CI remains prohibited.
 
 Manually written explanations remain reviewable prose. Generated blocks are owned by `scripts/github_docs.py`; update the source or generator rather than editing those blocks by hand. The fingerprint binds the listed source contents and is not a test or production-qualification claim.
 
@@ -29,7 +29,7 @@ make docs PYTHON=python3
 make check PYTHON=python3
 ```
 
-For frontend changes, render the actual dashboard using synthetic fixtures, inspect the new preview, and replace `docs/assets/dashboard.jpg`. Then record its source binding:
+For web changes, render the actual dashboard using synthetic fixtures, inspect the new preview, and replace `docs/assets/dashboard.jpg`. For native widget changes, compile the companion and run `--widget-preview` to display synthetic provider windows without a collector or credential reads. Inspect the widget at both ends of its scroll range and replace `docs/assets/widget.jpg`. The native preview receipt binds the image to all files under `native/`. Then record the source bindings:
 
 ```sh
 make preview-receipt PYTHON=python3

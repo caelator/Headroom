@@ -5,7 +5,7 @@ The optional browser bridge sends only quota fields, never session credentials.
 """
 import json
 from datetime import timedelta
-from .analytics import iso, number, timestamp, utc_now
+from .analytics import iso, number, timestamp, utc_now, plausible_reset
 from .registry import MAX_DATA_AGE_SECONDS
 
 SOURCE = 'muse_oauth_subscription_quota'
@@ -84,14 +84,22 @@ def normalize_subscription(payload, store, observed_at=None):
         if not isinstance(entry,dict):continue
         used=number(entry.get('used_percent'))
         known=active and used is not None and used>=0
-        if key=='window':
+        # The short window always reports its duration. The weekly block does
+        # not in the field schema, so 10080 applies only when the field is
+        # absent; a reported duration wins and qualifies the ID/label.
+        if key=='window' or 'window_duration_mins' in entry:
             minutes=entry.get('window_duration_mins')
             if type(minutes) is not int or not 0<minutes<=5270400: known=False;minutes=None
+        if key=='window':
             label='5-hour' if minutes==300 else 'Current window'
+        else:
+            label='Weekly' if minutes==10080 else 'Current window'
         reset=entry.get('resets_at');reset_at=None
         if type(reset) in (int,float) and number(reset) is not None:
             try:reset_at=iso(datetime.fromtimestamp(reset,timezone.utc))
             except (OverflowError,ValueError,OSError):pass
+        if reset_at is not None:
+            reset_at=plausible_reset(reset_at,iso(observed),minutes)
         windows.append({'id':key+'-'+str(minutes)+'m','label':label,'window_minutes':minutes,
             'used_pct':float(used) if known else None,'remaining_pct':float(max(0,100-used)) if known else None,
             'resets_at':reset_at,'status':'fresh' if known else 'unknown','observed_at':iso(observed),

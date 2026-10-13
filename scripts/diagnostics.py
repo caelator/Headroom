@@ -327,14 +327,37 @@ def probe(provider=None,factory=None):
             'error_code':p['error']['code'] if p['error'] else None} for p in data['providers'] if p['id'] in provider_ids]}
 
 
-def _fetch_health():
+def _fetch_local_json(path):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self,*args,**kwargs):return None
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
-    with opener.open('http://127.0.0.1:8793/health',timeout=5) as response:
+    with opener.open('http://127.0.0.1:8793'+path,timeout=5) as response:
         raw=response.read(1024*1024+1)
         if len(raw)>1024*1024:raise ValueError('Local health response exceeds the limit.')
         return json.loads(raw)
+
+
+def _fetch_health():
+    return _fetch_local_json('/health')
+
+
+def _fetch_plans():
+    return _fetch_local_json('/api/plans')
+
+
+def quota_report(health, plans):
+    """Allowlisted quota fields from the same process as the health identity."""
+    identity=health_identity(health)
+    if not identity['identity_valid'] or health_identity(plans)!=identity:
+        raise ValueError('Service identity changed or could not be verified')
+    return {'refresh_seconds':plans['refresh_interval_seconds'],
+            'max_age_seconds':plans['freshness_policy']['max_age_seconds'],
+            'providers':[{'id':p['id'],'status':p['status'],'source':p.get('source'),
+                'remaining_pct':p['remaining_pct'],
+                'error_code':p['error']['code'] if p['error'] else None,
+                'windows':[{key:w.get(key) for key in ('id','label','status','source',
+                    'used_pct','remaining_pct','window_minutes','resets_at','observed_at')}
+                    for w in p['windows']]} for p in plans['providers']]}
 
 
 def storage_status(data):
@@ -384,11 +407,13 @@ def main():
     health=None
     try:
         health=_fetch_health()
-        report['refresh_seconds']=health['refresh_interval_seconds']
-        report['max_age_seconds']=health['freshness_policy']['max_age_seconds']
-        report['providers']=[{'id':p['id'],'status':p['status'],'source':p.get('source'), 'remaining_pct':p['remaining_pct'],
-            'error_code':p['error']['code'] if p['error'] else None} for p in health['providers']]
     except Exception:report['api']='unavailable'
+    try:
+        plans=_fetch_plans()
+        # Keep identity qualification separate from a slower quota snapshot.
+        # Never associate provider data with a different/restarted service.
+        report.update(quota_report(health,plans))
+    except Exception:report['quotas']='unavailable'
     report['installed']=installed_report(service_status=service_status,menu_status=menu_status,health=health)
     print(json.dumps(report,indent=2))
 

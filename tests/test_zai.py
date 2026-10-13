@@ -24,7 +24,7 @@ class ZaiTests(unittest.TestCase):
         self.store=Store(self.root/'data')
     def test_explicit_percentage_matching_counter_units_and_windows(self):
         result=zai.normalize(payload(),self.store,'synthetic-key','global')
-        self.assertEqual([w['id'] for w in result['windows']],['primary','secondary'])
+        self.assertEqual([w['id'] for w in result['windows']],['primary','quota-credit_limit-10080'])
         self.assertEqual(result['windows'][0]['remaining_pct'],60)
         self.assertEqual(result['account_ref'],self.store.fingerprint('zai|configured|global|synthetic-key'))
         self.assertNotIn('synthetic-key',json.dumps(result))
@@ -92,6 +92,60 @@ class ZaiTests(unittest.TestCase):
         self.assertIsNone(zai.normalize(p,self.store,'k','global')['windows'][1]['resets_at'])
         p['data']['limits'][0]['nextResetTime']=int(utc_now().timestamp()+3600)
         self.assertIsNone(zai.normalize(p,self.store,'k','global')['windows'][0]['resets_at'])
+
+    def test_token_and_credit_same_five_hour_cadence_keep_distinct_denominators(self):
+        def run(limits):
+            p=payload();p['data']['limits']=limits
+            result=zai.normalize(p,self.store,'k','global')
+            return result,{w['id']:(w['remaining_pct'],w['label'],w['window_minutes']) for w in result['windows']}
+        tokens={'type':'TOKENS_LIMIT','unit':3,'number':5,'percentage':40}
+        credit={'type':'CREDIT_LIMIT','unit':3,'number':5,'percentage':25}
+        forward,mapping=run([tokens,credit]);_,reversed_mapping=run([credit,tokens])
+        self.assertEqual(mapping,reversed_mapping)
+        self.assertEqual(mapping['primary'],(60,'5-hour',300))
+        self.assertEqual(mapping['quota-credit_limit-300'][0],75)
+        self.assertNotEqual(mapping['quota-credit_limit-300'][1],'5-hour')
+        self.assertEqual(forward['status'],'verified')
+        weekly,mapping=run([{'type':'TOKENS_LIMIT','unit':6,'number':1,'percentage':40},
+                             {'type':'CREDIT_LIMIT','unit':6,'number':1,'percentage':25}])
+        self.assertEqual(mapping['secondary'][0],60);self.assertEqual(mapping['quota-credit_limit-10080'][0],75)
+    def test_time_limit_multiple_cadences_keep_marker_and_qualify_other(self):
+        def run(limits):
+            p=payload();p['data']['limits']=limits
+            return {w['id']:(w['remaining_pct'],w['window_minutes']) for w in zai.normalize(p,self.store,'k','global')['windows']}
+        marker={'type':'TIME_LIMIT','unit':5,'number':1,'percentage':10}
+        five_hour={'type':'TIME_LIMIT','unit':3,'number':5,'percentage':20}
+        self.assertEqual(run([marker,five_hour]),run([five_hour,marker]))
+        self.assertEqual(run([marker,five_hour])['zai-mcp'],(90,None))
+        self.assertEqual(run([marker,five_hour])['quota-time_limit-300'],(80,300))
+
+    def test_credit_and_time_ids_do_not_depend_on_payload_membership(self):
+        def run(limits):
+            p=payload();p['data']['limits']=limits
+            return {w['id']:(w['remaining_pct'],w['label'],w['window_minutes']) for w in zai.normalize(p,self.store,'k','global')['windows']}
+        credit={'type':'CREDIT_LIMIT','unit':3,'number':5,'percentage':25}
+        tokens={'type':'TOKENS_LIMIT','unit':3,'number':5,'percentage':40}
+        marker_limit={'type':'TIME_LIMIT','unit':5,'number':1,'percentage':10}
+        timed={'type':'TIME_LIMIT','unit':3,'number':5,'percentage':20}
+        credit_id='quota-credit_limit-300';time_id='quota-time_limit-300'
+        # Alone, with another limit, and alone again: the ID never moves.
+        self.assertEqual(run([credit])[credit_id],(75,'Credit 5-hour',300))
+        self.assertNotIn('primary',run([credit]))
+        self.assertEqual(run([credit,tokens])[credit_id],run([credit])[credit_id])
+        self.assertEqual(run([tokens])[ 'primary'],run([credit,tokens])['primary'])
+        self.assertEqual(run([timed])[time_id],(80,'Time 5-hour',300))
+        self.assertNotIn('zai-mcp',run([timed]))
+        self.assertEqual(run([timed,marker_limit])[time_id],run([timed])[time_id])
+        self.assertEqual(run([marker_limit])['zai-mcp'],run([timed,marker_limit])['zai-mcp'])
+        self.assertEqual(run([credit]),run([credit]))
+
+    def test_duplicate_denominator_is_withheld_independent_of_order(self):
+        a={'type':'TOKENS_LIMIT','unit':3,'number':5,'percentage':10}
+        b={**a,'percentage':80}
+        for limits in ([a,b],[b,a]):
+            p=payload();p['data']['limits']=limits
+            result=zai.normalize(p,self.store,'k','global')
+            self.assertEqual(result['status'],'partial');self.assertFalse(result['windows'])
 
 
 if __name__=='__main__':unittest.main()

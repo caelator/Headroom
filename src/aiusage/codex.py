@@ -58,7 +58,7 @@ def _window(raw,key,label,stamp):
     used=number(raw.get('used_percent')) if isinstance(raw,dict) else None
     if used is not None and used<0:used=None
     seconds=raw.get('limit_window_seconds') if isinstance(raw,dict) else None
-    minutes=seconds//60 if type(seconds) is int and 60<=seconds<=5270400*60 else None
+    minutes=seconds//60 if type(seconds) is int and 60<=seconds<=5270400*60 and seconds%60==0 else None
     return {'id':key,'label':label,'used_pct':float(used) if used is not None else None,
         'remaining_pct':float(max(0,100-used)) if used is not None else None,
         'resets_at':plausible_reset(_reset(raw.get('reset_at')),stamp,minutes) if isinstance(raw,dict) else None,'window_minutes':minutes,
@@ -70,7 +70,7 @@ def normalize(payload,store,account,observed_at=None):
     reported=_text(payload.get('account_id') or payload.get('accountId'),256)
     if reported and account and reported!=account:raise ValueError('Codex account mismatch')
     account=reported or account
-    stamp=observed_at or iso();windows=[];seen=set();incomplete=False
+    stamp=observed_at or iso();windows=[];seen=set();ambiguous=set();incomplete=False
     limits=payload.get('rate_limit')
     if limits is not None and not isinstance(limits,dict):incomplete=True
     if isinstance(limits,dict):
@@ -80,8 +80,8 @@ def normalize(payload,store,account,observed_at=None):
             window=_window(raw,default,'Current window',stamp)
             if window['window_minutes']==10080:window.update(id='secondary',label='Weekly')
             elif window['window_minutes']==300:window.update(id='primary',label='5-hour')
-            else:window['id']='codex-'+field+'-'+str(window['window_minutes'])
-            if window['id'] in seen:incomplete=True;continue
+            else:window['id']='codex-'+field+'-'+(str(window['window_minutes']) if window['window_minutes'] is not None else 'unknown')
+            if window['id'] in seen:incomplete=True;ambiguous.add(window['id']);continue
             seen.add(window['id']);windows.append(window)
     extra=payload.get('additional_rate_limits')
     if extra is not None and not isinstance(extra,list):incomplete=True;extra=[]
@@ -96,16 +96,27 @@ def normalize(payload,store,account,observed_at=None):
             raw=block.get(field)
             if raw is None:continue
             window=_window(raw,'','',stamp)
+            minutes=window['window_minutes']
+            # Cadence comes only from the provider-reported duration.  The
+            # primary/secondary field names are slots, not durations: a
+            # reversed payload (weekly in primary, 5-hour in secondary)
+            # must keep the weekly and 5-hour identities with their values.
+            # Unknown or missing durations get a neutral, slot-qualified id
+            # and label so they are never presented as 5-hour or Weekly.
+            slot=field.removesuffix('_window')
             if spark:
-                weekly=window['window_minutes']==10080 or (window['window_minutes'] is None and field=='secondary_window')
-                key='codex-spark-weekly' if weekly else 'codex-spark'
-                title='Codex Spark Weekly' if weekly else 'Codex Spark 5-hour'
+                if minutes==10080:key,title='codex-spark-weekly','Codex Spark Weekly'
+                elif minutes==300:key,title='codex-spark','Codex Spark 5-hour'
+                elif minutes is not None:key,title=f'codex-spark-{minutes}m',f'Codex Spark {minutes}-minute window'
+                else:key,title=f'codex-spark-{slot}-unknown','Codex Spark Current window'
             else:
                 slug=re.sub(r'[^a-z0-9]+','-',(metered or name or '').lower()).strip('-')
                 if not slug:incomplete=True;continue
-                key='codex-'+slug+('-weekly' if field=='secondary_window' else '')
-                title=label+(' Weekly' if field=='secondary_window' else '')
-            if key in seen:incomplete=True;continue
+                if minutes==10080:key,title=f'codex-{slug}-weekly',f'{label} Weekly'
+                elif minutes==300:key,title=f'codex-{slug}',f'{label} 5-hour'
+                elif minutes is not None:key,title=f'codex-{slug}-{minutes}m',f'{label} {minutes}-minute window'
+                else:key,title=f'codex-{slug}-{slot}-unknown',f'{label} Current window'
+            if key in seen:incomplete=True;ambiguous.add(key);continue
             seen.add(key);window.update(id=key,label=title);windows.append(window)
     # An explicit same-unit individual cap is separate from the API credit wallet.
     cap=payload.get('individual_limit') or (limits.get('individual_limit') if isinstance(limits,dict) else None)
@@ -126,6 +137,7 @@ def normalize(payload,store,account,observed_at=None):
     if isinstance(credits,dict):
         balance=number(credits.get('balance'))
         if balance is not None and balance>=0:wallet={'balance':str(balance),'unit':'credits','label':'API credit balance'}
+    windows=[w for w in windows if w['id'] not in ambiguous]
     fresh=any(w['status']=='fresh' for w in windows)
     return {'id':'codex','observed_at':stamp,'source':SOURCE,
         'status':'verified' if fresh and account and not incomplete and all(w['status']=='fresh' for w in windows) else 'partial',

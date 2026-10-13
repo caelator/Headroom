@@ -51,6 +51,25 @@ class MuseTests(unittest.TestCase):
         d=self.payload();d['subs_usage']['window'].pop('window_duration_mins');d['subs_usage']['weekly']['resets_at']='invalid'
         r=normalize_subscription(d,self.s);self.assertIsNone(r['windows'][0]['remaining_pct'])
         self.assertIsNone(r['windows'][1]['resets_at'])
+    def test_resets_beyond_window_are_withheld_but_percentages_remain(self):
+        d=self.payload()
+        d['subs_usage']['window']['resets_at']=int((utc_now()+timedelta(days=10)).timestamp())
+        d['subs_usage']['weekly']['resets_at']=int((utc_now()+timedelta(days=30)).timestamp())
+        r=normalize_subscription(d,self.s)
+        self.assertEqual([w['resets_at'] for w in r['windows']],[None,None])
+        self.assertEqual([w['remaining_pct'] for w in r['windows']],[28,71])
+    def test_weekly_reported_duration_qualifies_id_and_label(self):
+        d=self.payload();d['subs_usage']['weekly']['window_duration_mins']=20160
+        w=normalize_subscription(d,self.s)['windows'][1]
+        self.assertEqual(w['id'],'weekly-20160m');self.assertEqual(w['window_minutes'],20160)
+        self.assertEqual(w['label'],'Current window');self.assertEqual(w['remaining_pct'],71)
+        d=self.payload();d['subs_usage']['weekly']['window_duration_mins']=10080
+        w=normalize_subscription(d,self.s)['windows'][1]
+        self.assertEqual(w['id'],'weekly-10080m');self.assertEqual(w['label'],'Weekly')
+        d=self.payload();d['subs_usage']['weekly']['window_duration_mins']='10080'
+        w=normalize_subscription(d,self.s)['windows'][1]
+        self.assertIsNone(w['window_minutes']);self.assertIsNone(w['remaining_pct'])
+        self.assertEqual(w['label'],'Current window')
     def test_missing_identity_time_or_malformed(self):
         for d in (None,{},self.payload(user_email=None)):
             with self.assertRaises(ValueError):normalize_subscription(d,self.s)

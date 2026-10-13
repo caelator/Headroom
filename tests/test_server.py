@@ -51,6 +51,11 @@ server.ModelStore=lambda:ledger
 server.model_catalog=lambda:[]
 server.HTTP_TIMEOUT_SECONDS=.4
 store=Store(sys.argv[1])
+_portfolio=store.portfolio
+def counting_portfolio(*args,**kwargs):
+    with open(Path(sys.argv[1])/'portfolio-calls','a') as marker:marker.write('x')
+    return _portfolio(*args,**kwargs)
+store.portfolio=counting_portfolio
 store.save_provider({'id':'codex','status':'partial','windows':[{'id':'test','label':'=FORMULA','observed_at':iso(),'source':'@SOURCE','status':'unknown'}]})
 server.serve(store,int(sys.argv[2]))
 '''
@@ -74,6 +79,21 @@ server.serve(store,int(sys.argv[2]))
         return status,data,hdr
     def post(self,path,obj,**headers):
         return self.request('POST',path,json.dumps(obj),{'Content-Type':'application/json','X-AIUsage-Action':'local',**headers})
+    def portfolio_calls(self):
+        marker=Path(self.temp.name)/'portfolio-calls'
+        return len(marker.read_text()) if marker.exists() else 0
+    def test_health_is_cheap_identity_and_plans_stays_full(self):
+        before=self.portfolio_calls()
+        code,body,_=self.request('GET','/health');self.assertEqual(code,200)
+        payload=json.loads(body);self.assertEqual(set(payload),{'service','synchronizing'})
+        self.assertIs(payload['synchronizing'],False)
+        self.assertEqual(payload['service']['name'],'headroom');self.assertEqual(payload['service']['api_version'],1)
+        self.assertEqual(payload['service']['pid'],self.process.pid)
+        self.assertEqual(len(payload['service']['source_fingerprint']),64)
+        self.assertEqual(self.request('GET','/health')[0],200)
+        self.assertEqual(self.portfolio_calls(),before)
+        code,body,_=self.request('GET','/api/plans');self.assertEqual(code,200)
+        self.assertEqual(len(json.loads(body)['providers']),6);self.assertEqual(self.portfolio_calls(),before+1)
     def test_six_plans_and_security_headers(self):
         code,body,headers=self.request('GET','/api/plans');self.assertEqual(code,200)
         self.assertEqual(len(json.loads(body)['providers']),6)

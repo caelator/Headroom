@@ -45,6 +45,21 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(result['providers'][0]['error_code'],'collector_error')
         self.assertNotIn('private-token',json.dumps(result))
 
+    def test_quota_snapshot_requires_matching_valid_health_identity(self):
+        service={'name':'headroom','api_version':1,'version':'0.1.0',
+                 'source_fingerprint':'a'*64,'pid':111}
+        plans={'service':service,'refresh_interval_seconds':30,
+            'freshness_policy':{'max_age_seconds':90},'providers':[{
+                'id':'codex','status':'verified','source':'codex_oauth_usage',
+                'remaining_pct':37,'error':None,'access_token':'private-token',
+                'windows':[{'id':'secondary','label':'Weekly','status':'fresh',
+                    'window_minutes':10080,'remaining_pct':37,'email':'private@example.invalid'}]}]}
+        result=diagnostics.quota_report({'service':service},plans)
+        self.assertEqual(result['providers'][0]['windows'][0]['window_minutes'],10080)
+        self.assertNotIn('private-',json.dumps(result));self.assertNotIn('private@example',json.dumps(result))
+        with self.assertRaises(ValueError):diagnostics.quota_report({},plans)
+        with self.assertRaises(ValueError):diagnostics.quota_report({'service':{**service,'pid':222}},plans)
+
 class InstalledIntegrityTests(unittest.TestCase):
     """Synthetic installed trees and fake command results only; no live data."""
     def setUp(self):

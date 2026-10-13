@@ -27,7 +27,7 @@ Headroom brings **Codex / ChatGPT, Muse, z.ai, Cursor, Antigravity, and Claude**
 <!-- headroom:snapshot:start -->
 **Current source:** version `0.1.0` · 6 built-in provider collectors · readings expire after 90 seconds · default polling 30 seconds.
 
-<sub>These facts are refreshed from the committed source. Source fingerprint: `c75a063b2454186b`.</sub>
+<sub>These facts are refreshed from the committed source. Source fingerprint: `85ae9f5d0c6f77cb`.</sub>
 <!-- headroom:snapshot:end -->
 
 ## What you get
@@ -39,7 +39,7 @@ Headroom brings **Codex / ChatGPT, Muse, z.ai, Cursor, Antigravity, and Claude**
 - **Local model accounting:** per-model receipts, known token counts, requests, and rolling token velocity, kept separate from subscription quota.
 - **Freshness you can see:** expired readings and connection failures withdraw current percentages and forecasts while keeping labelled history.
 - **Native menu indicator:** a macOS companion showing current remaining quota and opening the dashboard.
-- **Floating desktop widget:** a draggable quota panel that stays visible across desktops. Hide or show it from the menu bar, and open the dashboard from the widget.
+- **Floating desktop widget:** a draggable quota panel that stays visible across desktops. See short and weekly allowances separately, scroll through every reported window, and request a fresh check from the widget.
 - **Local storage:** SQLite history, private file permissions, and an HTTP service bound to `127.0.0.1`.
 <!-- headroom:features:end -->
 
@@ -83,8 +83,12 @@ The service runs a verified, read-only code snapshot under `~/.local/share/aiusa
 Installers preserve previous bundles, LaunchAgents, receipts, credentials and history, and roll back an activation that fails verification. Read [operations and recovery](docs/operations.md) for service names, diagnostics, backups, and interrupted-install recovery. The app is locally ad-hoc signed; there is no notarized downloadable release.
 
 <!-- headroom:native-note:start -->
-The floating widget appears on the first launch of the native companion. Drag it to your preferred position; its position and visibility preference are remembered. Use the Headroom menu to hide or show it. Collection continues while the widget is hidden.
+The floating widget shows every reported quota window separately, with labelled percentages and reset countdowns. Short and weekly allowances appear side by side; additional pools remain available by scrolling. Check now requests new provider readings while respecting retry delays. Drag it to your preferred position; its position and visibility preference are remembered. Use the Headroom menu to hide or show it. Collection continues while the widget is hidden.
 <!-- headroom:native-note:end -->
+
+![Headroom floating widget with synthetic quota windows](docs/assets/widget.jpg)
+
+*Each allowance keeps its own label, percentage and reset time. This synthetic example shows Muse at 88% for 5 hours and 37% weekly. Scroll to see additional windows.*
 
 ## Supported providers
 

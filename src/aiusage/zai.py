@@ -79,7 +79,8 @@ def normalize(payload,store,key,region,observed_at=None,organization=None,projec
         raise ValueError('Unsuccessful quota response')
     data=payload.get('data')
     if not isinstance(data,dict) or not isinstance(data.get('limits'),list):raise ValueError('Quota limits required')
-    stamp=observed_at or iso();windows=[];seen=set();incomplete=False
+    stamp=observed_at or iso();windows=[];incomplete=False
+    entries=[]
     for raw in data['limits'][:32]:
         if not isinstance(raw,dict) or raw.get('type') not in ('TOKENS_LIMIT','CREDIT_LIMIT','TIME_LIMIT'):
             incomplete=True;continue
@@ -89,10 +90,31 @@ def normalize(payload,store,key,region,observed_at=None,organization=None,projec
         kind=raw['type']
         # TIME_LIMIT unit 5 / number 1 is the provider's monthly MCP marker,
         # not a one-minute rolling allowance. Its duration stays unknown.
-        if kind=='TIME_LIMIT' and unit==5 and count==1:minutes=None
-        key_id='zai-mcp' if kind=='TIME_LIMIT' else 'primary' if minutes==300 else 'secondary' if minutes==10080 else 'quota-'+kind.lower()+'-'+str(minutes)
-        if key_id in seen:incomplete=True;continue
-        seen.add(key_id)
+        marker=kind=='TIME_LIMIT' and unit==5 and count==1
+        if marker:minutes=None
+        # A window ID names the denominator itself (type and cadence), never
+        # the other limits present in this payload, so adding or removing a
+        # limit cannot rebind an existing series. primary/secondary are
+        # reserved for TOKENS_LIMIT, whose series already use them;
+        # CREDIT_LIMIT is always type-qualified, and zai-mcp is reserved
+        # for the known monthly TIME_LIMIT marker. Non-marker TIME_LIMITs
+        # are always cadence-qualified.
+        if kind=='TOKENS_LIMIT':
+            key_id='primary' if minutes==300 else 'secondary' if minutes==10080 else 'quota-tokens_limit-'+str(minutes)
+        elif kind=='CREDIT_LIMIT':
+            key_id='quota-credit_limit-'+str(minutes) if minutes is not None else 'quota-credit_limit'
+        elif marker:
+            key_id='zai-mcp'
+        else:
+            key_id='quota-time_limit-'+str(minutes) if minutes is not None else 'quota-time_limit'
+        entries.append({'raw':raw,'kind':kind,'minutes':minutes,'marker':marker,'id':key_id})
+    claims={}
+    for entry in entries:claims[entry['id']]=claims.get(entry['id'],0)+1
+    for entry in entries:
+        raw,kind,minutes,key_id=entry['raw'],entry['kind'],entry['minutes'],entry['id']
+        # Two claims to one denominator are ambiguous; do not select whichever
+        # arrived first and expose a different percentage after reordering.
+        if claims[key_id]>1:incomplete=True;continue
         used=number(raw.get('percentage'))
         if used is not None and used<0:used=None
         allowance,current,remaining=(number(raw.get(k)) for k in ('usage','currentValue','remaining'))
@@ -108,7 +130,13 @@ def normalize(payload,store,key,region,observed_at=None,organization=None,projec
             try:
                 reset=datetime.fromtimestamp(float(epoch/1000),timezone.utc)
             except (ValueError,OverflowError,OSError):pass
-        label='MCP' if kind=='TIME_LIMIT' else '5-hour' if minutes==300 else 'Weekly' if minutes==10080 else 'Coding quota'
+        if kind=='TIME_LIMIT' and entry['marker']:
+            label='MCP'
+        elif kind in ('CREDIT_LIMIT','TIME_LIMIT'):
+            cadence='5-hour' if minutes==300 else 'weekly' if minutes==10080 else 'coding quota' if minutes is not None else 'quota'
+            label=('Credit ' if kind=='CREDIT_LIMIT' else 'Time ')+cadence
+        else:
+            label='5-hour' if minutes==300 else 'Weekly' if minutes==10080 else 'Coding quota'
         windows.append({'id':key_id,'label':label,'used_pct':float(used) if known else None,
             'remaining_pct':float(max(0,100-used)) if known else None,'resets_at':plausible_reset(iso(reset),stamp,minutes) if reset else None,
             'window_minutes':minutes,'status':'fresh' if known else 'unknown','observed_at':stamp,'source':SOURCE})

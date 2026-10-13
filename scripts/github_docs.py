@@ -15,6 +15,7 @@ SOURCE_ROOTS=('src/','web/','native/','scripts/','.githooks/')
 ZERO=re.compile(r'0{40}|0{64}')
 OID=re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
 PREVIEW='docs/assets/preview.json'
+WIDGET_PREVIEW='docs/assets/widget-preview.json'
 
 
 class DocsError(Exception):pass
@@ -126,7 +127,8 @@ def contents(source):
     license_name='MIT' if license_title=='MIT License' else license_title
     names=[p['name'] for p in providers.values()]
     joined=', '.join(names[:-1])+', and '+names[-1] if len(names)>1 else names[0]
-    native_note=('The floating widget appears on the first launch of the native companion. Drag it to your preferred position; its position and visibility preference are remembered. Use the Headroom menu to hide or show it. Collection continues while the widget is hidden.' if floating else
+    native_note=('The floating widget shows every reported quota window separately, with labelled percentages and reset countdowns. Short and weekly allowances appear side by side; additional pools remain available by scrolling. Check now requests new provider readings while respecting retry delays. Drag it to your preferred position; its position and visibility preference are remembered. Use the Headroom menu to hide or show it. Collection continues while the widget is hidden.' if floating and 'class WidgetQuotaTile' in source.text('native/MenuBar.swift') else
+                 'The floating widget appears on the first launch of the native companion. Drag it to your preferred position; its position and visibility preference are remembered. Use the Headroom menu to hide or show it. Collection continues while the widget is hidden.' if floating else
                  'The native companion shows current quota in the menu bar and opens the local dashboard.')
     features=[
         f'- **{len(providers)} plans at a glance:** remaining allowance, provider-reported tier, connection state, and the reset for the limiting window.',
@@ -135,7 +137,7 @@ def contents(source):
         '- **Local model accounting:** per-model receipts, known token counts, requests, and rolling token velocity, kept separate from subscription quota.',
         '- **Freshness you can see:** expired readings and connection failures withdraw current percentages and forecasts while keeping labelled history.',
         '- **Native menu indicator:** a macOS companion showing current remaining quota and opening the dashboard.']
-    if floating:features.append('- **Floating desktop widget:** a draggable quota panel that stays visible across desktops. Hide or show it from the menu bar, and open the dashboard from the widget.')
+    if floating:features.append('- **Floating desktop widget:** a draggable quota panel that stays visible across desktops. '+('See short and weekly allowances separately, scroll through every reported window, and request a fresh check from the widget.' if 'class WidgetQuotaTile' in source.text('native/MenuBar.swift') else 'Hide or show it from the menu bar, and open the dashboard from the widget.'))
     features.append('- **Local storage:** SQLite history, private file permissions, and an HTTP service bound to `127.0.0.1`.')
     requirements=[f'- **macOS {macos}+** for the supported provider integrations and native companion.',f'- **Python {minimum}+** (`{python}`). '+('The Python runtime uses the standard library; there are no third-party runtime dependencies.' if not project.get('dependencies') else 'Runtime packages: '+', '.join(project['dependencies'])+'.'),
         '- **Node.js** to run the local JavaScript checks.',
@@ -171,6 +173,12 @@ def preview_check(source):
     image='docs/assets/dashboard.jpg'
     if receipt.get('image_sha256')!=hashlib.sha256(source.read(image)).hexdigest() or receipt.get('frontend_sha256')!=source.digest(paths):
         raise DocsError('Dashboard preview is stale. Refresh the synthetic screenshot, run make preview-receipt, stage the image/receipt, and recommit.')
+    if 'class WidgetQuotaTile' in source.text('native/MenuBar.swift'):
+        try:widget=json.loads(source.text(WIDGET_PREVIEW))
+        except (ValueError,KeyError,DocsError):raise DocsError('Synthetic widget preview receipt is missing or invalid.') from None
+        paths=[p for p in source.modes if p.startswith('native/')]
+        if widget.get('image_sha256')!=hashlib.sha256(source.read('docs/assets/widget.jpg')).hexdigest() or widget.get('frontend_sha256')!=source.digest(paths):
+            raise DocsError('Widget preview is stale. Inspect a new synthetic widget screenshot, run make preview-receipt, and stage its image/receipt.')
 
 
 def check(source):
@@ -233,6 +241,10 @@ def main():
             source=Source(args.repo);paths=[p for p in source.modes if p.startswith('web/')]
             data={'image':'dashboard.jpg','image_sha256':hashlib.sha256(source.read('docs/assets/dashboard.jpg')).hexdigest(),'frontend_sha256':source.digest(paths)}
             (args.repo/PREVIEW).write_text(json.dumps(data,indent=2)+'\n');print('Recorded the synthetic preview source receipt.')
+            if 'class WidgetQuotaTile' in source.text('native/MenuBar.swift'):
+                paths=[p for p in source.modes if p.startswith('native/')]
+                data={'image':'widget.jpg','image_sha256':hashlib.sha256(source.read('docs/assets/widget.jpg')).hexdigest(),'frontend_sha256':source.digest(paths)}
+                (args.repo/WIDGET_PREVIEW).write_text(json.dumps(data,indent=2)+'\n');print('Recorded the synthetic widget source receipt.')
         else:
             source=Source(args.repo,args.revision)
             if args.write:(args.repo/'README.md').write_text(render(source));print('README facts refreshed from repository source.')

@@ -16,7 +16,7 @@ python3 scripts/diagnostics.py
 
 The service executes a code-only payload under `~/.local/share/aiusage/releases/<source fingerprint>/`, verified against its manifest and made read-only. It keeps the existing private data directory. Editable checkout changes cannot silently change the running service. Earlier payloads remain available for recovery.
 
-The native companion is compiled for the current architecture with an actual macOS 13 deployment target, self-tested, checked against the matching service and ad-hoc signed before replacing the live bundle. The installers use a kernel lock, private atomic metadata writes and a persistent transaction journal. Previous LaunchAgent inodes, bundles and installation receipts are preserved before activation. A failed activation rolls back that component. Service and native installations are separate transactions; diagnostics detect a mismatched pair if one component cannot be updated.
+The native companion is compiled for the current architecture with an actual macOS 13 deployment target, self-tested, checked against the matching service and ad-hoc signed before replacing the live bundle. The installers use a kernel lock, private atomic metadata writes and a persistent transaction journal. Previous LaunchAgent inodes, bundles and installation receipts are preserved before activation. Activation and rollback register the active app path with macOS LaunchServices and unregister preserved inactive copies, so reopening cannot select a failed or archived build. All preserved bundles remain on disk. A failed activation rolls back that component. Service and native installations are separate transactions; diagnostics detect a mismatched pair if one component cannot be updated.
 
 ## Runtime checks
 
@@ -48,7 +48,11 @@ Damaged salts and unsupported database schemas fail closed without inventing new
 
 Hide/show it from the Headroom menu. Hiding leaves the menu and collectors running. Opening `Headroom.app` again reveals a hidden widget. Open dashboard checks the matching local service before opening `http://127.0.0.1:8793/` and reports an actionable connection failure locally.
 
-The widget uses the existing poll and expiry timer. Numeric percentages and explicit unlimited readings require current observations; stale values are labelled history, with no historical meter or forecast. Separate plan percentages are never averaged.
+The widget shows every provider-reported quota window in labelled tiles. A 5-hour allowance and a weekly allowance have their own percentages, meters and reset countdowns. Extra model pools stay distinct; scroll to reach every window. Only windows actually returned by the provider appear. Hover a tile to inspect the source, reported window length and exact reset time.
+
+Check now requests collection through the matching local service and clears credential-approval latches. It respects upstream retry delays, and the confirmation says the check was queued rather than implying that fresh data has already arrived. The menu also offers Check quotas now.
+
+The widget uses the existing poll and expiry timer. Numeric percentages and explicit unlimited readings require current observations; stale values are labelled Last, with no historical meter or forecast. A passed reset is shown explicitly, and unlimited is never synthesized as 100%. Separate plan percentages are never averaged.
 
 ## Recovery and rollback
 

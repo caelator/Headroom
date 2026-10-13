@@ -150,10 +150,13 @@ def _window(key, label, fraction, reset, minutes, stamp, disabled=False):
     value = number(fraction)
     known = value is not None and 0 <= value <= 1 and not disabled
     deadline = timestamp(reset)
-    # Numeric epoch strings are also used by the local app protocol.
-    if deadline is None and isinstance(reset, str):
+    # Numeric epoch seconds (and numeric epoch strings, also used by the
+    # local app protocol) are accepted only inside a plausible epoch range;
+    # plausible_reset then applies the observed-at/window checks. Numbers
+    # are seconds here: no millisecond guessing.
+    if deadline is None and isinstance(reset, (str, int, float)):
         epoch = number(reset)
-        if epoch is not None:
+        if epoch is not None and 946684800 <= epoch <= 32503680000:
             from datetime import datetime, timezone
             try: deadline = datetime.fromtimestamp(float(epoch), timezone.utc)
             except (ValueError, OverflowError, OSError): pass
@@ -163,27 +166,45 @@ def _window(key, label, fraction, reset, minutes, stamp, disabled=False):
             'status': 'fresh' if known else 'unknown', 'observed_at': stamp, 'source': SOURCE}
 
 
+def _group_slug(value):
+    if not value:
+        return None
+    slug = re.sub(r'[^a-z0-9]+', '-', value.lower()).strip('-')
+    return slug or None
+
+
 def _summary_windows(payload, stamp):
+    """Return (windows, incomplete).
+
+    A window ID names its denominator (group and bucket), never the other
+    groups present in this payload, so adding or removing a group cannot
+    rebind an existing series. Generic bucket IDs such as session/weekly
+    are always qualified by a stable slug derived from the group's own
+    reported name. Known provider-qualified keys (gemini-*, 3p-*) keep
+    their long-standing summary ID only when that qualifier is consistent
+    with the reported group. Without a stable group identity the window
+    is withheld and incomplete is set rather than guessing an owner.
+    """
     _valid_response(payload)
     root = payload.get('response') or payload.get('summary') or payload
     groups = root.get('groups') if isinstance(root, dict) else None
     if not isinstance(groups, list):
-        return []
-    windows = []
-    taken = set()
+        return [], False
+    items = []
     for group in groups[:16]:
         if not isinstance(group, dict): continue
-        title = _text(group.get('displayName') or group.get('name')) or 'Quota'
+        raw_title = _text(group.get('displayName') or group.get('name'))
+        title = raw_title or 'Quota'
         if 'gemini' in title.lower(): title = 'Gemini'
         elif any(s in title.lower() for s in ('claude', 'gpt')): title = 'Claude/GPT'
+        slug = _group_slug(raw_title)
         buckets = group.get('buckets')
         if not isinstance(buckets, list): continue
         for bucket in buckets[:16]:
             if not isinstance(bucket, dict): continue
             key = _text(bucket.get('bucketId') or bucket.get('id'))
-            if not key or not re.fullmatch(r'[A-Za-z0-9_-]+', key) or key in taken:
+            if not key or not re.fullmatch(r'[A-Za-z0-9_-]+', key):
                 continue
-            taken.add(key)
             label = _text(bucket.get('displayName') or bucket.get('name')) or key
             cadence = _text(bucket.get('window'))
             candidates = [cadence] if cadence else [key, label]
@@ -198,16 +219,45 @@ def _summary_windows(payload, stamp):
                 fraction = remaining.get('remainingFraction')
                 if fraction is None and remaining.get('case') == 'remainingFraction':
                     fraction = remaining.get('value')
-            windows.append(_window('antigravity-quota-summary-' + key, title + ' ' + label,
-                fraction, bucket.get('resetTime'), minutes, stamp, bucket.get('disabled') is True))
-            if len(windows) >= 32: return windows
-    return windows
+            items.append({'key': key, 'slug': slug, 'title': title, 'label': label,
+                          'fraction': fraction, 'reset': bucket.get('resetTime'),
+                          'minutes': minutes, 'disabled': bucket.get('disabled') is True})
+    # Assign every ID from the item's own group/bucket identity first,
+    # then withhold any ID claimed more than once: a shared ID would mix
+    # distinct denominators, and keeping the first claim would depend on
+    # payload order.
+    for item in items:
+        key, slug = item['key'], item['slug']
+        prefix = re.split(r'[-_]', key, maxsplit=1)[0].lower() if ('-' in key or '_' in key) else ''
+        slug_tokens = slug.split('-') if slug else []
+        preserved = ((prefix == 'gemini' and 'gemini' in slug_tokens)
+                     or (prefix == '3p' and ('3p' in slug_tokens or 'third' in slug_tokens
+                         or item['title'] == 'Claude/GPT')))
+        if preserved:
+            item['window_id'] = 'antigravity-quota-summary-' + key
+        elif slug:
+            item['window_id'] = 'antigravity-quota-summary-' + slug + '-' + key
+        else:
+            item['window_id'] = None
+    windows = []
+    incomplete = False
+    claims = {}
+    for item in items: claims[item['window_id']] = claims.get(item['window_id'], 0) + 1
+    for item in items:
+        window_id = item['window_id']
+        if window_id is None or claims[window_id] > 1:
+            incomplete = True
+            continue
+        windows.append(_window(window_id, item['title'] + ' ' + item['label'],
+            item['fraction'], item['reset'], item['minutes'], stamp, item['disabled']))
+        if len(windows) >= 32: return windows, incomplete
+    return windows, incomplete
 
 
 def normalize(status_payload, store, summary=None, observed_at=None):
     stamp = observed_at or iso()
     email, status = _identity(status_payload)
-    windows = _summary_windows(summary, stamp) if summary is not None else []
+    windows, summary_incomplete = _summary_windows(summary, stamp) if summary is not None else ([], False)
     if not any(w['status'] == 'fresh' for w in windows):
         data = status.get('cascadeModelConfigData')
         models = data.get('clientModelConfigs') if isinstance(data, dict) else None
@@ -230,7 +280,7 @@ def normalize(status_payload, store, summary=None, observed_at=None):
         tier = next((_text(info.get(k)) for k in ('planDisplayName', 'displayName', 'productName',
                      'planName', 'planShortName') if _text(info.get(k))), None)
     return {'id': 'antigravity', 'observed_at': stamp, 'source': SOURCE,
-            'status': 'verified' if windows and all(w['status'] == 'fresh' for w in windows) else 'partial',
+            'status': 'verified' if windows and not summary_incomplete and all(w['status'] == 'fresh' for w in windows) else 'partial',
             'verified_tier': tier, 'auth_method': 'local_app', 'auth_verified': True,
             'account_ref': store.fingerprint('antigravity|' + email), 'windows': windows, 'wallet': None,
             'error': None if windows else {'code': 'no_quota_data', 'message': 'Antigravity reported no quota windows.'}}

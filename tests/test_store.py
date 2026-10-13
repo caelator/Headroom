@@ -19,6 +19,11 @@ class StoreTests(unittest.TestCase):
                 'window_minutes':10080,'source':'test'}], **extra}
     def codex(self):
         return next(p for p in self.store.portfolio()['providers'] if p['id']=='codex')
+    def persisted_alerts(self,provider=None):
+        with self.store.connect() as db:
+            if provider is None:rows=db.execute('SELECT id,provider_id,window_id,kind FROM alerts ORDER BY provider_id,kind').fetchall()
+            else:rows=db.execute('SELECT id,provider_id,window_id,kind FROM alerts WHERE provider_id=? ORDER BY kind',(provider,)).fetchall()
+        return [dict(row) for row in rows]
     def test_private_storage(self):
         self.assertEqual(self.store.root.stat().st_mode & 0o777,0o700)
         self.assertEqual(self.store.path.stat().st_mode & 0o777,0o600)
@@ -76,6 +81,49 @@ class StoreTests(unittest.TestCase):
         with self.store.connect() as db:
             db.execute("UPDATE metadata SET value=? WHERE key='settings'",(json.dumps({'refresh_interval_seconds':300,'critical_remaining_pct':10,'warn_remaining_pct':25}),))
         self.assertEqual(self.store.settings()['refresh_interval_seconds'],30)
+    def test_save_provider_persists_only_saved_provider_alerts_without_full_portfolio(self):
+        self.store.save_provider(self.snapshot())
+        self.assertEqual([a['provider_id'] for a in self.persisted_alerts()],['codex'])
+        with self.store.connect() as db:db.execute('DELETE FROM alerts')
+        other=self.snapshot();other['id']='claude'
+        with patch.object(self.store,'portfolio',side_effect=AssertionError('full portfolio on save')):
+            self.store.save_provider(other)
+        # Only the changed provider is (re)persisted; the untouched codex alert is not.
+        self.assertEqual([a['provider_id'] for a in self.persisted_alerts()],['claude'])
+        # The full portfolio remains available and accurate on demand.
+        self.assertEqual({a['provider_id'] for a in self.store.portfolio()['alerts']},{'codex','claude'})
+
+    def test_saved_provider_alerts_respect_account_failure_and_reset_boundaries(self):
+        self.store.save_provider(self.snapshot());first=self.persisted_alerts('codex')
+        self.assertEqual(len(first),1);self.assertEqual(first[0]['kind'],'critical_remaining')
+        self.store.save_provider(self.snapshot(account_ref='account-b'));second=self.persisted_alerts('codex')
+        self.assertEqual(len(second),2);self.assertNotEqual(first[0]['id'],second[1]['id'] if second[0]['id']==first[0]['id'] else second[0]['id'])
+        self.assertEqual(self.store.portfolio()['alerts'][0]['id'],(second[1] if second[0]['id']==first[0]['id'] else second[0])['id'])
+        count=len(self.persisted_alerts())
+        self.store.save_provider({'id':'codex','status':'auth_required','observed_at':iso(),
+            'auth_verified':False,'auth_method':'oauth','source':'test','windows':[],
+            'error':{'code':'auth_required','message':'Sign in'}})
+        self.assertEqual(len(self.persisted_alerts()),count);self.assertFalse(self.store.portfolio()['alerts'])
+        expired=self.snapshot();expired['windows'][0]['resets_at']=iso(self.now-timedelta(seconds=1))
+        self.store.save_provider(expired)
+        self.assertEqual(len(self.persisted_alerts()),count);self.assertFalse(self.store.portfolio()['alerts'])
+        renewed=self.snapshot();renewed['windows'][0]['resets_at']=iso(self.now+timedelta(days=2))
+        self.store.save_provider(renewed);after=self.persisted_alerts('codex')
+        self.assertEqual(len(after),count+1);self.assertNotIn(after[-1]['id'],{a['id'] for a in second})
+
+    def test_saved_provider_velocity_alert_uses_current_account_and_reset_only(self):
+        reset=iso(self.now+timedelta(hours=1))
+        for minutes,used in ((6,10),(5,18),(4,26),(3,34),(2,42),(1,46)):
+            self.store.record_window('codex','account-a',{'id':'weekly','label':'Weekly','status':'fresh',
+                'used_pct':used,'remaining_pct':100-used,'window_minutes':10080,'resets_at':reset,
+                'observed_at':iso(self.now-timedelta(minutes=minutes))})
+        data=self.snapshot();data['windows'][0].update(used_pct=50,remaining_pct=50,resets_at=reset)
+        with patch.object(self.store,'portfolio',side_effect=AssertionError('full portfolio on save')):
+            self.store.save_provider(data)
+        self.assertEqual([(a['provider_id'],a['kind']) for a in self.persisted_alerts()],
+                         [('codex','exhausts_before_reset')])
+        self.assertEqual(self.codex()['windows'][0]['velocity']['confidence'],'observed')
+
     def test_alerts_are_scoped_to_account(self):
         self.store.save_provider(self.snapshot());a=self.store.portfolio()['alerts'][0]['id']
         self.store.save_provider(self.snapshot(account_ref='account-b'));b=self.store.portfolio()['alerts'][0]['id']

@@ -119,6 +119,13 @@ class CursorTests(unittest.TestCase):
             if team:s['teamUsage']=team
             result=cursor.normalize(s,{'sub':'demo-user'},self.store,'demo-user',requests=requests)
             self.assertEqual([w['id'] for w in result['windows']],[key]);self.assertEqual(result['status'],'verified')
+    def test_empty_or_unrecognized_plan_does_not_block_fallback(self):
+        for plan in ({},{'unrecognized':1}):
+            s=summary();s['individualUsage']={'plan':plan,'overall':{'used':20,'limit':100}}
+            result=cursor.normalize(s,{'sub':'demo-user'},self.store,'demo-user')
+            self.assertEqual([w['id'] for w in result['windows']],['individual-overall'])
+            self.assertEqual(result['windows'][0]['remaining_pct'],80)
+            self.assertEqual(result['status'],'verified')
     def test_configured_token_rotation_preserves_stable_scope(self):
         file=self.root/'.config/codexbar/config.json';file.parent.mkdir(parents=True)
         def reference(value,org='org'):

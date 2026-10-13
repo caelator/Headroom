@@ -57,6 +57,60 @@ def installation_lock(data):
     finally:os.close(fd)
 
 
+LSREGISTER=Path('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister')
+
+
+def launch_services_supported():
+    return sys.platform=='darwin'
+
+
+def _inactive_managed_bundles(bundle):
+    bundle=Path(bundle);parent=bundle.parent;inactive=[]
+    backups=parent/'.headroom-backups'
+    if backups.exists() and not backups.is_symlink():
+        for archive in sorted(backups.iterdir(),key=lambda path:path.name):
+            if archive.is_symlink():continue
+            candidate=archive/bundle.name
+            if candidate.exists() and candidate not in inactive:inactive.append(candidate)
+    for failed in sorted(parent.glob('.Headroom.failed-*.app'),key=lambda path:path.name):
+        if failed not in inactive:inactive.append(failed)
+    return [path for path in inactive if path!=bundle]
+
+
+def sync_launch_services(bundle):
+    """Unregister preserved managed copies, then register the active bundle last.
+
+    Registration is exact-path only: it never resets or reseeds the
+    LaunchServices database and never removes a preserved bundle.  Off macOS
+    this is a no-op, which keeps Linux tests able to patch
+    ``launch_services_supported`` and ``command`` and observe the calls.
+    """
+    if bundle is None or not launch_services_supported():return
+    bundle=Path(bundle)
+    if bundle.is_symlink():raise InstallError('Managed application bundle must not be a symbolic link.')
+    inactive=_inactive_managed_bundles(bundle)
+    for path in inactive:
+        if path.is_symlink():raise InstallError('Managed application bundle must not be a symbolic link.')
+    try:
+        for path in inactive:
+            # ``lsregister -u`` reports an already-absent path on stdout as
+            # ``failed to scan <path>: -10814`` with exit code 1.  Accept
+            # only that known absence; any other failure, including another
+            # exit-1 message, must surface as a registration failure.
+            result=command([str(LSREGISTER),'-u',str(path)],check=False)
+            output=b''
+            for stream in (getattr(result,'stdout',None),getattr(result,'stderr',None)):
+                if isinstance(stream,str):output+=stream.encode()
+                elif stream:output+=stream
+            if result.returncode!=0 and not (result.returncode==1 and b'-10814' in output):
+                raise InstallError('LaunchServices unregistration failed.')
+        if bundle.exists():
+            result=command([str(LSREGISTER),'-f',str(bundle)],check=False)
+            if result.returncode!=0:
+                raise InstallError('LaunchServices registration failed.')
+    except (InstallError,OSError,subprocess.TimeoutExpired):raise InstallError('LaunchServices registration failed; preserved bundles remain available for recovery.') from None
+
+
 def command(argv,check=True,timeout=30):
     result=subprocess.run(argv,capture_output=True,timeout=timeout,check=False)
     if check and result.returncode:raise InstallError('Installation command failed; the previous installation will be restored.')
@@ -77,16 +131,22 @@ def bootstrap(label,plist):
 
 def health(expected=None,expected_pid=None):
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
-    with opener.open('http://127.0.0.1:8793/health',timeout=3) as response:
-        raw=response.read(1024*1024+1)
-        if len(raw)>1024*1024:raise InstallError('Local health response exceeds the limit.')
-        result=json.loads(raw)
+    def read(path):
+        with opener.open('http://127.0.0.1:8793'+path,timeout=3) as response:
+            raw=response.read(1024*1024+1)
+            if len(raw)>1024*1024:raise InstallError('Local health response exceeds the limit.')
+            result=json.loads(raw)
+            if not isinstance(result,dict):raise InstallError('Invalid local response.')
+            return result
+    result=read('/health')
     identity=result.get('service') or {}
     if identity.get('name')!='headroom' or identity.get('api_version')!=1:raise InstallError('Unexpected service on the dashboard port.')
     if expected and identity.get('source_fingerprint')!=expected:raise InstallError('The running service does not match the installed build.')
     if expected_pid and identity.get('pid')!=expected_pid:raise InstallError('Dashboard response belongs to another process.')
-    if not isinstance(result.get('providers'),list) or len(result['providers'])!=6:raise InstallError('Provider registry is incomplete.')
-    return result
+    plans=read('/api/plans')
+    if plans.get('service')!=identity:raise InstallError('Dashboard identity changed during verification.')
+    if not isinstance(plans.get('providers'),list) or len(plans['providers'])!=6:raise InstallError('Provider registry is incomplete.')
+    return plans
 
 
 def wait_service(label,fingerprint,timeout=20):
@@ -152,6 +212,7 @@ def recover(data):
         backup.rename(bundle)
     elif bundle and not value.get('previous_bundle') and bundle.exists():
         bundle.rename(bundle.parent/('.Headroom.failed-'+value['id']+'.app'))
+    if bundle:sync_launch_services(bundle)
     if before and before.exists():os.replace(before,plist)
     elif value['previous_plist_hash'] is None and plist.exists():plist.unlink()
     if value['previous_registered'] and plist.exists():bootstrap(value['label'],plist)
@@ -194,6 +255,9 @@ def activate(label,plist,spec,data,validate,bundle=None,candidate_bundle=None,co
         if bundle:
             if previous_bundle:bundle.rename(bundle_backup)
             candidate_bundle.rename(bundle)
+            # Register the active path before bootstrap starts the app, so
+            # the launched process is associated with this bundle.
+            sync_launch_services(bundle)
         atomic_write(plist,payload)
         bootstrap(label,plist)
         validate()

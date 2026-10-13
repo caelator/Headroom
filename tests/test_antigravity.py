@@ -120,5 +120,70 @@ class AntigravityTests(unittest.TestCase):
             result=ag.collect(self.store)
         self.assertNotIn('synthetic-secret',json.dumps(result))
 
+    def test_same_bucket_id_in_two_groups_is_namespaced_by_group_stably(self):
+        def grouped(order):
+            groups=[
+                {'displayName':'Gemini','buckets':[
+                    {'bucketId':'session','window':'SESSION','remainingFraction':.25},
+                    {'bucketId':'gemini-weekly','window':'weekly','remainingFraction':.6}]},
+                {'displayName':'Claude/GPT','buckets':[
+                    {'bucketId':'session','window':'SESSION','remainingFraction':.6}]}]
+            return {'response':{'groups':[groups[i] for i in order]}}
+        forward=ag.normalize(status(),self.store,grouped([0,1]))
+        mapping={w['id']:w['remaining_pct'] for w in forward['windows']}
+        self.assertEqual(mapping['antigravity-quota-summary-gemini-session'],25)
+        self.assertEqual(mapping['antigravity-quota-summary-claude-gpt-session'],60)
+        # The non-colliding bucket keeps its long-standing summary ID.
+        self.assertEqual(mapping['antigravity-quota-summary-gemini-weekly'],60)
+        reversed_result=ag.normalize(status(),self.store,grouped([1,0]))
+        self.assertEqual(mapping,{w['id']:w['remaining_pct'] for w in reversed_result['windows']})
+        self.assertEqual(forward['status'],'verified')
+    def test_ambiguous_colliding_group_identity_is_partial_not_guessed(self):
+        ambiguous={'response':{'groups':[
+            {'buckets':[{'bucketId':'session','window':'SESSION','remainingFraction':.25}]},
+            {'buckets':[{'bucketId':'session','window':'SESSION','remainingFraction':.6}]}]}}
+        result=ag.normalize(status(),self.store,ambiguous)
+        self.assertEqual(result['status'],'partial')
+        self.assertNotIn('antigravity-quota-summary-session',[w['id'] for w in result['windows']])
+    def test_numeric_reset_seconds_are_supported_and_implausible_values_withheld(self):
+        s=summary();s['response']['groups'][0]['buckets'][0]['resetTime']=int((utc_now()+timedelta(hours=2)).timestamp())
+        window=ag.normalize(status(),self.store,s)['windows'][0]
+        self.assertIsNotNone(window['resets_at'])
+        for bad in [True,0,10**15,(utc_now()+timedelta(days=4000)).timestamp()]:
+            s=summary();s['response']['groups'][0]['buckets'][0]['resetTime']=bad
+            self.assertIsNone(ag.normalize(status(),self.store,s)['windows'][0]['resets_at'])
+
+    def test_generic_bucket_ids_do_not_depend_on_payload_membership(self):
+        def run(groups):
+            return ag.normalize(status(),self.store,{'response':{'groups':groups}})
+        gemini={'displayName':'Gemini','buckets':[{'bucketId':'session','window':'SESSION','remainingFraction':.25}]}
+        claude={'displayName':'Claude/GPT','buckets':[{'bucketId':'session','window':'SESSION','remainingFraction':.6},
+                                                      {'bucketId':'weekly','window':'weekly','remainingFraction':.5}]}
+        def mapping(result):return {w['id']:w['remaining_pct'] for w in result['windows']}
+        gemini_id='antigravity-quota-summary-gemini-session';claude_id='antigravity-quota-summary-claude-gpt-session'
+        # Alone, with another group, reversed, and alone again: IDs never move.
+        self.assertEqual(mapping(run([gemini])),{gemini_id:25})
+        self.assertEqual(mapping(run([claude]))[claude_id],60)
+        self.assertEqual(mapping(run([claude]))['antigravity-quota-summary-claude-gpt-weekly'],50)
+        combined=mapping(run([gemini,claude]));self.assertEqual(combined[gemini_id],25);self.assertEqual(combined[claude_id],60)
+        self.assertEqual(combined,mapping(run([claude,gemini])))
+        self.assertEqual(mapping(run([gemini])),{gemini_id:25})
+    def test_provider_qualified_keys_preserved_only_when_consistent_with_group(self):
+        def run(group_name,bucket_id):
+            s={'response':{'groups':[{'displayName':group_name,'buckets':[
+                {'bucketId':bucket_id,'window':'SESSION','remainingFraction':.25}]}]}}
+            return ag.normalize(status(),self.store,s)['windows'][0]['id']
+        self.assertEqual(run('Gemini','gemini-session'),'antigravity-quota-summary-gemini-session')
+        self.assertEqual(run('Claude/GPT','3p-session'),'antigravity-quota-summary-3p-session')
+        # A gemini-* key reported under another group is not rebound to the
+        # existing gemini series; it is qualified by its reported group.
+        self.assertEqual(run('Claude/GPT','gemini-session'),'antigravity-quota-summary-claude-gpt-gemini-session')
+        self.assertEqual(run('Gemini','3p-session'),'antigravity-quota-summary-gemini-3p-session')
+    def test_generic_bucket_without_group_identity_is_partial_not_guessed(self):
+        s={'response':{'groups':[{'buckets':[{'bucketId':'session','window':'SESSION','remainingFraction':.25}]}]}}
+        result=ag.normalize(status(),self.store,s)
+        self.assertEqual(result['status'],'partial')
+        self.assertNotIn('antigravity-quota-summary-session',[w['id'] for w in result['windows']])
+
 
 if __name__=='__main__':unittest.main()

@@ -102,6 +102,21 @@ class GitHubDocsTests(unittest.TestCase):
         self.write('docs/assets/dashboard.jpg',b'updated-synthetic-image');self.receipt()
         docs.check(docs.Source(self.root))
 
+    def test_widget_changes_require_a_source_bound_synthetic_preview(self):
+        self.write('native/MenuBar.swift','private final class WidgetQuotaTile {}\n')
+        self.write('docs/assets/widget.jpg',b'synthetic-widget-image');self.sync()
+        with self.assertRaisesRegex(docs.DocsError,'widget preview receipt'):docs.check(docs.Source(self.root))
+        source=docs.Source(self.root)
+        self.write(docs.WIDGET_PREVIEW,json.dumps({'image':'widget.jpg','image_sha256':docs.hashlib.sha256(source.read('docs/assets/widget.jpg')).hexdigest(),
+            'frontend_sha256':source.digest([p for p in source.modes if p.startswith('native/')])}))
+        docs.check(docs.Source(self.root));valid=self.commit()
+        self.write('native/MenuBar.swift','private final class WidgetQuotaTile { let changed=true }\n');self.sync()
+        with self.assertRaisesRegex(docs.DocsError,'Widget preview is stale'):docs.check(docs.Source(self.root))
+        # A correct working image cannot replace the receipt for the actual pushed object.
+        docs.pre_push(self.root,self.push_line(valid))
+        stale=self.commit()
+        with self.assertRaisesRegex(docs.DocsError,'Widget preview is stale'):docs.pre_push(self.root,self.push_line(stale))
+
     def test_missing_links_and_hosted_workflows_block_publication(self):
         readme=self.root/'README.md';readme.write_text(readme.read_text()+'[Missing](missing.md)\n')
         with self.assertRaisesRegex(docs.DocsError,'missing public file'):docs.check(docs.Source(self.root))

@@ -254,8 +254,7 @@ class Store:
                 self.record_window(provider, result.get('account_ref'), window, db)
             db.execute('INSERT OR REPLACE INTO providers(id,state,last_attempt) VALUES (?,?,?)',
                        (provider, json.dumps(result), iso()))
-        portfolio=self.portfolio()
-        alerts=portfolio['alerts']
+        alerts=self._provider_alerts(provider)
         if alerts:
             with self.connect() as db:
                 for alert in alerts:
@@ -293,7 +292,18 @@ class Store:
             db.execute('BEGIN')
             return self._portfolio(db,synchronizing)
 
-    def _portfolio(self,db,synchronizing=False):
+    def _provider_alerts(self, provider):
+        """Alerts for one saved provider, using the portfolio rules for that
+        provider only.  This reads the just-committed provider row and its
+        observations directly, so account, reset and freshness boundaries are
+        evaluated from stored state on every save; nothing is cached or
+        carried across accounts or reset windows."""
+        if provider not in PROVIDERS: raise ValueError('Unknown provider')
+        with self.connect() as db:
+            db.execute('BEGIN')
+            return self._portfolio(db,only_provider=provider)['alerts']
+
+    def _portfolio(self,db,synchronizing=False,only_provider=None):
         now = utc_now()
         settings = self.settings(db)
         stale_seconds = MAX_DATA_AGE_SECONDS
@@ -305,6 +315,7 @@ class Store:
             if valid_state(raw,row['id']):states[row['id']]=(raw,row['last_attempt'])
         providers = []
         for provider, spec in PROVIDERS.items():
+            if only_provider is not None and provider!=only_provider:continue
             raw, attempted = states.get(provider, ({'id':provider,'status':'unavailable','auth_method':'unknown',
                 'auth_verified':False,'verified_tier':None,'windows':[],'source':'not_connected',
                 'error':{'code':'not_connected','message':'Waiting for authenticated account verification.'}}, None))

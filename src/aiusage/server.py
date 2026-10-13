@@ -151,7 +151,11 @@ def serve(store,port=8793):
                 except OSError:self.send(503,{'error':'Frontend installation incomplete'})
                 return
             try:
-                if path in ('/api/plans','/health'):
+                if path=='/health':
+                    # Cheap liveness/identity probe: no portfolio, velocity or
+                    # forecast work.  Provider snapshots stay on /api/plans.
+                    self.send(200,{'service':service,'synchronizing':bool(collectors.synchronizing)})
+                elif path=='/api/plans':
                     self.send(200,{**store.portfolio(collectors.synchronizing),'service':service})
                 elif path=='/api/history':
                     provider=query.get('provider',['codex'])[0];hours=int(query.get('hours',['24'])[0])

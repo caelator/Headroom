@@ -21,6 +21,7 @@ private struct Pace {let pct_per_hour:Double?;let confidence:String;let exhausts
 private struct Quota {
     let id:String;let label:String;let remaining_pct:Double?;let last_known_remaining_pct:Double?
     let resets_at:String?;let fresh_until:String?;let observed_at:String?;let status:String;let velocity:Pace
+    var window_minutes:Double?=nil;var source:String?=nil
 }
 private struct Provider {
     let id:String;let name:String;let status:String;let remaining_pct:Double?;let plan:Plan;let windows:[Quota]
@@ -90,7 +91,8 @@ private func parseSnapshot(_ data:Data)->Snapshot? {
                          last_known_remaining_pct:jsonNumber(window["last_known_remaining_pct"]),
                          resets_at:jsonString(window["resets_at"]),fresh_until:jsonString(window["fresh_until"]),
                          observed_at:jsonString(window["observed_at"]),
-                         status:jsonString(window["status"]) ?? "unknown",velocity:pace)
+                         status:jsonString(window["status"]) ?? "unknown",velocity:pace,
+                         window_minutes:jsonNumber(window["window_minutes"]),source:jsonString(window["source"]))
         }
         let planRaw=provider["plan"] as? [String:Any]
         return Provider(id:id,name:jsonString(provider["name"]) ?? id,
@@ -134,7 +136,10 @@ private final class BoundedLoader:NSObject,URLSessionDataDelegate {
         return URLSession(configuration:sessionConfiguration(),delegate:self,delegateQueue:queue)
     }()
     func load(_ url:URL,completion:@escaping (Data?,URLResponse?,Error?)->Void)->URLSessionDataTask {
-        let task=urlSession.dataTask(with:url)
+        load(URLRequest(url:url),completion:completion)
+    }
+    func load(_ request:URLRequest,completion:@escaping (Data?,URLResponse?,Error?)->Void)->URLSessionDataTask {
+        let task=urlSession.dataTask(with:request)
         lock.lock();states[task.taskIdentifier]=State(completion);lock.unlock()
         task.resume();return task
     }
@@ -241,25 +246,134 @@ private func clampedFrame(_ frame:NSRect,into visible:NSRect)->NSRect {
     return result
 }
 
-private final class FloatingWidget:NSObject,NSWindowDelegate {
-    private let panel=NSPanel(contentRect:NSRect(x:40,y:80,width:320,height:320),
-      styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
-    private let headline=NSTextField(labelWithString:"Connecting…")
-    private let subtitle=NSTextField(labelWithString:"Waiting for current quota")
-    private let footnote=NSTextField(labelWithString:"Separate plan allowances")
-    private let rowsStack=NSStackView()
-    private var rows:[String:(NSTextField,NSProgressIndicator)]=[:]
-    private var rowSignature:[String]=[]
-    private var screenObserver:NSObjectProtocol?
-    private let open:()->Void
-    private let defaults=UserDefaults.standard
-    var isVisible:Bool {panel.isVisible}
-    var panelVisible:Bool {panel.isVisible}
+private func widgetPercent(_ value:Double)->String {
+    return String(format:value.rounded()==value ? "%.0f%%" : "%.1f%%",value)
+}
+private func resetCountdown(_ date:Date,at now:Date)->String {
+    let minutes=max(1,Int(ceil(date.timeIntervalSince(now)/60)))
+    if minutes>=1440 {return "\(minutes/1440)d \((minutes%1440)/60)h"}
+    if minutes>=60 {return "\(minutes/60)h \(minutes%60)m"}
+    return "\(minutes)m"
+}
+private struct WidgetReading {
+    let value:String;let detail:String;let meter:Double?;let state:WindowState
+}
+private func widgetReading(_ window:Quota,providerStatus:String,serviceStale:Bool,maxAgeSeconds:Double?,at now:Date)->WidgetReading {
+    var state=windowState(window,providerStatus:providerStatus,maxAgeSeconds:maxAgeSeconds,at:now)
+    if serviceStale && (state == .fresh || state == .unlimited) {state = .stale}
+    let reset=parsedDate(window.resets_at)
+    let resetText=reset.map{$0>now ? "Resets in "+resetCountdown($0,at:now) : "Reset passed"} ?? "Reset not reported"
+    if state == .fresh,let remaining=validPercent(window.remaining_pct) {
+        return WidgetReading(value:widgetPercent(remaining),detail:resetText,meter:remaining,state:state)
+    }
+    if state == .unlimited {return WidgetReading(value:"Unlimited",detail:"No quota cap reported",meter:nil,state:state)}
+    let known=validPercent(window.last_known_remaining_pct) ?? validPercent(window.remaining_pct)
+    if state == .expired {
+        return WidgetReading(value:"Reset passed",detail:known.map{"Last "+widgetPercent($0)+" before reset"} ?? "Awaiting a new reading",meter:nil,state:state)
+    }
+    if let known {return WidgetReading(value:"Last "+widgetPercent(known),detail:"Not current · awaiting update",meter:nil,state:state)}
+    return WidgetReading(value:providerStatus=="auth_required" ? "Sign in" : "Unavailable",detail:state == .stale ? "Awaiting a fresh reading" : resetText,meter:nil,state:state)
+}
 
-    init(openDashboard:@escaping ()->Void,testing:Bool=false) {
-        self.open=openDashboard;super.init()
+private final class WidgetMeter:NSView {
+    var remaining:Double=0 {didSet{needsDisplay=true}}
+    override func draw(_ dirtyRect:NSRect) {
+        let track=NSBezierPath(roundedRect:bounds,xRadius:2,yRadius:2)
+        NSColor.separatorColor.withAlphaComponent(0.3).setFill();track.fill()
+        let filled=NSRect(x:bounds.minX,y:bounds.minY,width:bounds.width*remaining/100,height:bounds.height)
+        (remaining<=10 ? NSColor.systemRed : (remaining<=25 ? .systemOrange : .systemGreen)).setFill()
+        NSBezierPath(roundedRect:filled,xRadius:2,yRadius:2).fill()
+    }
+}
+private final class WidgetQuotaTile {
+    let view=NSBox();let label=NSTextField(labelWithString:"")
+    let value=NSTextField(labelWithString:"—");let detail=NSTextField(labelWithString:"")
+    let progress=WidgetMeter()
+    init(provider:String,window:Quota) {
+        view.boxType = .custom;view.borderWidth=0;view.titlePosition = .noTitle
+        view.contentViewMargins = .zero;view.cornerRadius=8
+        view.fillColor = .controlBackgroundColor.withAlphaComponent(0.55)
+        let content=NSView();view.contentView=content
+        let stack=NSStackView();stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=3
+        stack.translatesAutoresizingMaskIntoConstraints=false;content.addSubview(stack)
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo:content.leadingAnchor,constant:8),
+          stack.trailingAnchor.constraint(equalTo:content.trailingAnchor,constant:-8),
+          stack.topAnchor.constraint(equalTo:content.topAnchor,constant:6),
+          stack.bottomAnchor.constraint(equalTo:content.bottomAnchor,constant:-6)])
+        label.stringValue=window.label;label.font = .systemFont(ofSize:10,weight:.medium)
+        label.textColor = .secondaryLabelColor;label.lineBreakMode = .byWordWrapping;label.maximumNumberOfLines=2
+        label.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
+        value.font = .monospacedDigitSystemFont(ofSize:18,weight:.semibold)
+        value.setContentCompressionResistancePriority(.required,for:.horizontal)
+        let top=NSStackView(views:[label,value]);top.orientation = .horizontal;top.alignment = .centerY
+        top.distribution = .fill;top.spacing=6
+        progress.heightAnchor.constraint(equalToConstant:4).isActive=true
+        progress.setAccessibilityElement(true);progress.setAccessibilityRole(.progressIndicator)
+        progress.setAccessibilityLabel(provider+" "+window.label+" remaining")
+        detail.font = .systemFont(ofSize:10);detail.textColor = .secondaryLabelColor;detail.lineBreakMode = .byTruncatingTail
+        stack.addArrangedSubview(top);stack.addArrangedSubview(progress);stack.addArrangedSubview(detail)
+        for child in stack.arrangedSubviews {child.widthAnchor.constraint(equalTo:stack.widthAnchor).isActive=true}
+        view.heightAnchor.constraint(greaterThanOrEqualToConstant:54).isActive=true
+    }
+    func update(_ reading:WidgetReading,provider:String,window:Quota) {
+        value.stringValue=reading.value
+        let current=reading.state == .fresh || reading.state == .unlimited
+        value.font = .monospacedDigitSystemFont(ofSize:current ? 18 : 12,weight:.semibold)
+        value.textColor=reading.meter.map{$0<=10 ? .systemRed : ($0<=25 ? .systemOrange : .labelColor)} ?? (current ? .labelColor : .secondaryLabelColor)
+        detail.stringValue=reading.detail
+        // Historical percentages are text only; a meter always means a current reading.
+        progress.isHidden=reading.meter==nil;progress.remaining=reading.meter ?? 0
+        progress.setAccessibilityValue(reading.meter.map{widgetPercent($0)+" remaining"} ?? "No current percentage")
+        value.setAccessibilityLabel(provider+" "+window.label+": "+reading.value+(reading.meter != nil ? " remaining" : ""))
+        let resetDetail=parsedDate(window.resets_at).map{"\nReset: "+resetFormatter.string(from:$0)} ?? ""
+        let durationDetail=window.window_minutes.flatMap{ $0>0 && $0<=5_270_400 ? "\nReported window: \(Int($0)) minutes" : nil } ?? ""
+        let sourceDetail=window.source.map{"\nSource: "+$0} ?? ""
+        view.toolTip=[provider,window.label,reading.value,reading.detail].joined(separator:" · ")+resetDetail+durationDetail+sourceDetail
+    }
+}
+private final class WidgetProviderGroup {
+    let view=NSStackView();let status=NSTextField(labelWithString:"")
+    var tiles:[WidgetQuotaTile]=[]
+    init(_ provider:Provider) {
+        view.orientation = .vertical;view.alignment = .leading;view.spacing=5
+        let name=NSTextField(labelWithString:provider.id=="codex" ? "Codex / ChatGPT" : provider.name)
+        name.font = .systemFont(ofSize:12,weight:.semibold)
+        status.font = .systemFont(ofSize:9);status.textColor = .secondaryLabelColor;status.alignment = .right
+        let header=NSStackView(views:[name,status]);header.orientation = .horizontal;header.distribution = .fill;header.spacing=8
+        name.setContentHuggingPriority(.defaultLow,for:.horizontal)
+        view.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:view.widthAnchor).isActive=true
+        if provider.windows.isEmpty {
+            let empty=NSTextField(labelWithString:"No quota windows reported");empty.font = .systemFont(ofSize:11)
+            empty.textColor = .secondaryLabelColor;view.addArrangedSubview(empty)
+        }
+        for start in stride(from:0,to:provider.windows.count,by:2) {
+            let pair=NSStackView();pair.orientation = .horizontal;pair.distribution = .fillEqually;pair.spacing=6
+            for index in start..<min(start+2,provider.windows.count) {
+                let tile=WidgetQuotaTile(provider:provider.name,window:provider.windows[index]);tiles.append(tile)
+                pair.addArrangedSubview(tile.view)
+            }
+            view.addArrangedSubview(pair);pair.widthAnchor.constraint(equalTo:view.widthAnchor).isActive=true
+        }
+    }
+}
+
+private final class FloatingWidget:NSObject,NSWindowDelegate {
+    private let panel=NSPanel(contentRect:NSRect(x:40,y:80,width:420,height:540),
+      styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+    private let subtitle=NSTextField(labelWithString:"Quota remaining · provider-reported windows")
+    private let footnote=NSTextField(labelWithString:"Connecting to your local service…")
+    private let actionStatus=NSTextField(labelWithString:"")
+    private let checkButton=NSButton(title:"Check now",target:nil,action:nil)
+    private let rowsStack=NSStackView();private let scroll=NSScrollView()
+    private var groups:[WidgetProviderGroup]=[];private var rowSignature:[String]=[]
+    private var screenObserver:NSObjectProtocol?
+    private let open:()->Void;private let check:()->Void
+    private let defaults=UserDefaults.standard
+    var isVisible:Bool {panel.isVisible};var panelVisible:Bool {panel.isVisible}
+    init(openDashboard:@escaping ()->Void,checkNow:@escaping ()->Void={},testing:Bool=false) {
+        self.open=openDashboard;self.check=checkNow;super.init()
         if !testing {defaults.register(defaults:["floatingWidgetEnabled":true])}
-        if !testing, defaults.object(forKey:"NSWindow Frame HeadroomFloatingWidget")==nil,
+        if !testing,defaults.object(forKey:"NSWindow Frame HeadroomFloatingWidget")==nil,
            let frame=UserDefaults(suiteName:"com.xxx.codex-usage-menu")?.string(forKey:"NSWindow Frame HeadroomFloatingWidget") {
             defaults.set(frame,forKey:"NSWindow Frame HeadroomFloatingWidget")
         }
@@ -269,148 +383,120 @@ private final class FloatingWidget:NSObject,NSWindowDelegate {
         panel.isFloatingPanel=true;panel.hidesOnDeactivate=false
         panel.becomesKeyOnlyIfNeeded=true;panel.isMovableByWindowBackground=true
         panel.isReleasedWhenClosed=false;panel.delegate=self
-        let surface=NSVisualEffectView(frame:NSRect(x:0,y:0,width:320,height:320))
-        surface.material = .hudWindow;surface.blendingMode = .behindWindow;surface.state = .active
-        surface.wantsLayer=true;surface.layer?.cornerRadius=18;surface.layer?.masksToBounds=true
-        panel.contentView=surface
-        let stack=NSStackView();stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=8
+        let surface=NSVisualEffectView();surface.material = .hudWindow;surface.blendingMode = .behindWindow;surface.state = .active
+        surface.wantsLayer=true;surface.layer?.cornerRadius=16;surface.layer?.masksToBounds=true;panel.contentView=surface
+        let stack=NSStackView();stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=10
         stack.translatesAutoresizingMaskIntoConstraints=false;surface.addSubview(stack)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo:surface.leadingAnchor,constant:16),
-          stack.trailingAnchor.constraint(equalTo:surface.trailingAnchor,constant:-16),
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo:surface.leadingAnchor,constant:14),
+          stack.trailingAnchor.constraint(equalTo:surface.trailingAnchor,constant:-14),
           stack.topAnchor.constraint(equalTo:surface.topAnchor,constant:14),
-          stack.bottomAnchor.constraint(equalTo:surface.bottomAnchor,constant:-14)])
-        let title=NSTextField(labelWithString:"◉  Headroom");title.font = .systemFont(ofSize:13,weight:.semibold)
-        let hide=NSButton(title:"Hide",target:self,action:#selector(hideWidget));hide.bezelStyle = .inline
-        hide.setAccessibilityLabel("Hide floating widget")
-        let header=NSStackView(views:[title,spacer(),hide]);header.orientation = .horizontal
-        stack.addArrangedSubview(header)
-        headline.font = .monospacedDigitSystemFont(ofSize:27,weight:.semibold)
-        headline.lineBreakMode = .byTruncatingTail;headline.setAccessibilityLabel("Limiting current quota")
+          stack.bottomAnchor.constraint(equalTo:surface.bottomAnchor,constant:-12)])
+        let title=NSTextField(labelWithString:"◉  Headroom");title.font = .systemFont(ofSize:14,weight:.semibold)
+        let hide=NSButton(title:"Hide",target:self,action:#selector(hideWidget));hide.bezelStyle = .inline;hide.setAccessibilityLabel("Hide floating widget")
+        let spacer=NSView();spacer.setContentHuggingPriority(.defaultLow,for:.horizontal)
+        let header=NSStackView(views:[title,spacer,hide]);header.orientation = .horizontal
         subtitle.font = .systemFont(ofSize:11);subtitle.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(headline);stack.addArrangedSubview(subtitle)
-        rowsStack.orientation = .vertical;rowsStack.alignment = .leading;rowsStack.spacing=8
-        stack.addArrangedSubview(rowsStack)
+        stack.addArrangedSubview(header);stack.addArrangedSubview(subtitle)
+        scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;scroll.drawsBackground=false;scroll.borderType = .noBorder
+        scroll.horizontalScrollElasticity = .none;scroll.verticalScrollElasticity = .automatic
+        let document=FlippedWidgetDocument();document.translatesAutoresizingMaskIntoConstraints=false
+        scroll.documentView=document
+        rowsStack.orientation = .vertical;rowsStack.alignment = .leading;rowsStack.spacing=12
+        rowsStack.translatesAutoresizingMaskIntoConstraints=false;document.addSubview(rowsStack)
+        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo:scroll.contentView.widthAnchor),
+          rowsStack.leadingAnchor.constraint(equalTo:document.leadingAnchor),rowsStack.trailingAnchor.constraint(equalTo:document.trailingAnchor),
+          rowsStack.topAnchor.constraint(equalTo:document.topAnchor),rowsStack.bottomAnchor.constraint(equalTo:document.bottomAnchor)])
+        stack.addArrangedSubview(scroll)
+        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant:80).isActive=true
         footnote.font = .systemFont(ofSize:10);footnote.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(footnote)
-        let button=NSButton(title:"Open dashboard",target:self,action:#selector(FloatingWidget.openDashboard))
-        button.bezelStyle = .rounded;button.setAccessibilityLabel("Open Headroom dashboard")
-        stack.addArrangedSubview(button)
+        actionStatus.font = .systemFont(ofSize:10);actionStatus.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(footnote);stack.addArrangedSubview(actionStatus);actionStatus.isHidden=true
+        checkButton.target=self;checkButton.action=#selector(FloatingWidget.checkNow);checkButton.bezelStyle = .rounded
+        checkButton.setAccessibilityLabel("Check provider quotas now")
+        let openButton=NSButton(title:"Open dashboard ↗",target:self,action:#selector(FloatingWidget.openDashboard));openButton.bezelStyle = .rounded
+        openButton.setAccessibilityLabel("Open Headroom dashboard")
+        let actions=NSStackView(views:[checkButton,openButton]);actions.orientation = .horizontal;actions.distribution = .fillEqually;actions.spacing=8
+        stack.addArrangedSubview(actions)
         for view in stack.arrangedSubviews {view.widthAnchor.constraint(equalTo:stack.widthAnchor).isActive=true}
-        rowsStack.widthAnchor.constraint(equalTo:stack.widthAnchor).isActive=true
         if !testing {
             panel.setFrameAutosaveName("HeadroomFloatingWidget")
             if !panel.setFrameUsingName("HeadroomFloatingWidget") {placeOnScreen()}
         }
-        clampPanelFrame()
-        screenObserver=NotificationCenter.default.addObserver(forName:NSApplication.didChangeScreenParametersNotification,object:nil,queue:.main){[weak self] _ in self?.clampPanelFrame()}
+        // Preserve the saved position, while adopting this version's wider layout.
+        var frame=panel.frame;frame.size.width=420;panel.setFrame(frame,display:true);clampPanelFrame()
+        screenObserver=NotificationCenter.default.addObserver(forName:NSApplication.didChangeScreenParametersNotification,object:nil,queue:.main){[weak self] _ in self?.fitPanel()}
         if !testing && defaults.bool(forKey:"floatingWidgetEnabled") {panel.orderFrontRegardless()}
     }
     deinit {if let screenObserver {NotificationCenter.default.removeObserver(screenObserver)}}
-
-    private func spacer()->NSView {
-        let view=NSView();view.setContentHuggingPriority(.defaultLow,for:.horizontal);return view
-    }
     private func placeOnScreen() {
         guard let frame=NSScreen.main?.visibleFrame else{return}
         panel.setFrameOrigin(NSPoint(x:frame.maxX-panel.frame.width-24,y:frame.minY+24))
     }
-    func clampPanelFrame() {
-        guard !NSScreen.screens.isEmpty else{return}
-        let frame=panel.frame
-        let target=NSScreen.screens.max(by:{
-            $0.visibleFrame.intersection(frame).area < $1.visibleFrame.intersection(frame).area
-        }) ?? NSScreen.main ?? NSScreen.screens[0]
-        panel.setFrame(clampedFrame(frame,into:target.visibleFrame),display:true)
+    private func targetScreen()->NSScreen? {
+        NSScreen.screens.max(by:{$0.visibleFrame.intersection(panel.frame).area < $1.visibleFrame.intersection(panel.frame).area}) ?? NSScreen.main
     }
-    private func rebuildRows(_ providers:[Provider]) {
-        let signature=providers.map{$0.id+"\u{1f}"+$0.name}
-        guard signature != rowSignature else{return}
-        rowSignature=signature;rows.removeAll()
-        for view in rowsStack.arrangedSubviews {rowsStack.removeArrangedSubview(view);view.removeFromSuperview()}
-        for provider in providers {
-            let label=NSTextField(labelWithString:provider.name);label.font = .systemFont(ofSize:11,weight:.medium)
-            let value=NSTextField(labelWithString:"—");value.font = .monospacedDigitSystemFont(ofSize:11,weight:.medium)
-            value.alignment = .right;value.widthAnchor.constraint(greaterThanOrEqualToConstant:104).isActive=true
-            let progress=NSProgressIndicator();progress.style = .bar;progress.isIndeterminate=false
-            progress.minValue=0;progress.maxValue=100;progress.doubleValue=0
-            progress.widthAnchor.constraint(equalToConstant:58).isActive=true
-            progress.setAccessibilityLabel(provider.name+" quota remaining")
-            let row=NSStackView(views:[label,spacer(),progress,value]);row.orientation = .horizontal;row.spacing=8
-            rowsStack.addArrangedSubview(row);rows[provider.id]=(value,progress)
-            row.widthAnchor.constraint(equalTo:rowsStack.widthAnchor).isActive=true
-        }
-        // Keep every API row reachable: grow/shrink with the provider list, then clamp on screen.
-        let desired=CGFloat(max(280,196+providers.count*28))
+    func clampPanelFrame() {if let screen=targetScreen(){panel.setFrame(clampedFrame(panel.frame,into:screen.visibleFrame),display:true)}}
+    private func fitPanel() {
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let contentHeight=rowsStack.fittingSize.height
+        let available=targetScreen()?.visibleFrame.height ?? 900
+        let desired=min(max(260,contentHeight+148+(actionStatus.isHidden ? 0 : 24)),min(700,max(220,available-48)))
         if abs(panel.frame.height-desired)>1 {
             var frame=panel.frame;let top=frame.maxY;frame.size.height=desired;frame.origin.y=top-desired
             panel.setFrame(frame,display:true)
         }
-        clampPanelFrame()
+        clampPanelFrame();panel.contentView?.layoutSubtreeIfNeeded()
+    }
+    private func rebuildRows(_ providers:[Provider]) {
+        let signature=providers.map{$0.id+"\u{1f}"+$0.name+"\u{1f}"+$0.windows.map{$0.id+"\u{1e}"+$0.label}.joined(separator:"\u{1d}")}
+        guard signature != rowSignature else{return}
+        rowSignature=signature;groups.removeAll()
+        for view in rowsStack.arrangedSubviews {rowsStack.removeArrangedSubview(view);view.removeFromSuperview()}
+        for provider in providers {
+            let group=WidgetProviderGroup(provider);groups.append(group);rowsStack.addArrangedSubview(group.view)
+            group.view.widthAnchor.constraint(equalTo:rowsStack.widthAnchor).isActive=true
+        }
+        fitPanel()
     }
     func setVisible(_ visible:Bool) {
         defaults.set(visible,forKey:"floatingWidgetEnabled")
-        if visible {clampPanelFrame();panel.orderFrontRegardless()} else {panel.orderOut(nil)}
+        if visible {fitPanel();panel.orderFrontRegardless()} else {panel.orderOut(nil)}
+    }
+    func setChecking(_ checking:Bool,message:String?=nil) {
+        checkButton.isEnabled = !checking;checkButton.title=checking ? "Requesting…" : "Check now"
+        actionStatus.stringValue=message ?? "";actionStatus.isHidden=message==nil;fitPanel()
     }
     func update(_ providers:[Provider],stale:Bool,maxAgeSeconds:Double?=nil,at now:Date=Date()) {
-        rebuildRows(providers)
-        let evaluated=providers.enumerated().map{(index:$0.offset,provider:$0.element,selection:selection($0.element,providerIndex:$0.offset,maxAgeSeconds:maxAgeSeconds,at:now))}
-        let finite=evaluated.filter{!stale && $0.selection?.state == .fresh}
-            .sorted{(validPercent($0.selection?.window.remaining_pct) ?? 101) < (validPercent($1.selection?.window.remaining_pct) ?? 101)}
-        let unlimited=evaluated.filter{!stale && $0.selection?.state == .unlimited}
-        if let entry=finite.first,let selected=entry.selection,let remaining=validPercent(selected.window.remaining_pct) {
-            let name=entry.provider.id=="codex" ? "Codex" : entry.provider.name
-            headline.stringValue=name+" "+percent(remaining)
-            headline.textColor=remaining<=10 ? .systemRed : .labelColor
-            subtitle.stringValue="Current remaining · most constrained plan"
-        }else if let entry=unlimited.first {
-            headline.stringValue=entry.provider.name+" Unlimited";headline.textColor = .labelColor
-            subtitle.stringValue="Current · no quota cap reported"
-        }else if !stale, let entry=evaluated.first(where:{lastKnownRemaining($0.provider,maxAgeSeconds:maxAgeSeconds,at:now) != nil}),
-                  let known=lastKnownRemaining(entry.provider,maxAgeSeconds:maxAgeSeconds,at:now) {
-            headline.stringValue=percent(known);headline.textColor = .secondaryLabelColor
-            subtitle.stringValue="Last known · not current ("+entry.provider.name+")"
-        }else{
-            headline.stringValue=providers.isEmpty ? "Connecting…" : "Quota unavailable"
-            headline.textColor = .secondaryLabelColor;subtitle.stringValue="Waiting for a fresh provider reading"
-        }
-        for entry in evaluated {
-            guard let (value,progress)=rows[entry.provider.id] else{continue}
-            let provider=entry.provider
-            let remaining=stale ? nil : (entry.selection?.state == .fresh ? validPercent(entry.selection?.window.remaining_pct) : nil)
-            let unlimitedNow = !stale && entry.selection?.state == .unlimited
-            let known=stale ? nil : lastKnownRemaining(provider,maxAgeSeconds:maxAgeSeconds,at:now)
-            if let remaining {
-                value.stringValue=percent(remaining);value.textColor=remaining<=10 ? .systemRed : .labelColor
-                value.setAccessibilityLabel(provider.name+": "+percent(remaining)+" remaining")
-                progress.doubleValue=remaining;progress.alphaValue=1
-                progress.setAccessibilityValue(percent(remaining)+" remaining")
-            }else if unlimitedNow {
-                value.stringValue="Unlimited";value.textColor = .labelColor
-                value.setAccessibilityLabel(provider.name+": unlimited, no quota cap reported")
-                progress.doubleValue=100;progress.alphaValue=1;progress.setAccessibilityValue("unlimited")
-            }else if let known {
-                // Labelled history only: never draw a historical meter.
-                value.stringValue="Last known "+percent(known);value.textColor = .secondaryLabelColor
-                value.setAccessibilityLabel(provider.name+": last known "+percent(known)+", not current")
-                progress.doubleValue=0;progress.alphaValue=0.25;progress.setAccessibilityValue("not current; last known "+percent(known))
-            }else{
-                value.stringValue=provider.status=="auth_required" ? "Sign in" : "—"
-                value.textColor = .secondaryLabelColor
-                value.setAccessibilityLabel(provider.name+": quota not current")
-                progress.doubleValue=0;progress.alphaValue=0.25;progress.setAccessibilityValue("unavailable")
+        rebuildRows(providers);var currentProviders=0
+        for (index,provider) in providers.enumerated() {
+            let group=groups[index];var currentWindows=0
+            for (windowIndex,window) in provider.windows.enumerated() {
+                let reading=widgetReading(window,providerStatus:provider.status,serviceStale:stale,maxAgeSeconds:maxAgeSeconds,at:now)
+                group.tiles[windowIndex].update(reading,provider:provider.name,window:window)
+                if reading.meter != nil || reading.state == .unlimited {currentWindows+=1}
             }
+            if currentWindows>0 {currentProviders+=1}
+            group.status.stringValue=provider.status=="auth_required" ? "Sign in required" :
+              (provider.status=="error" ? "Connection error" : (currentWindows>0 ? "\(currentWindows)/\(provider.windows.count) current" : "Awaiting update"))
         }
-        let currentCount=finite.count+unlimited.count
-        footnote.stringValue="\(currentCount) of \(providers.count) current · separate allowances"
+        footnote.stringValue=providers.isEmpty ? "Connecting to your local service…" : "\(currentProviders)/\(providers.count) plans current · separate allowances"
+        fitPanel()
     }
     func windowShouldClose(_ sender:NSWindow)->Bool {setVisible(false);return false}
-    func assertLayoutRows(_ expected:Int) {
+    func assertLayoutRows(_ expected:Int,windows:Int?=nil) {
         panel.contentView?.layoutSubtreeIfNeeded()
-        precondition(rowsStack.arrangedSubviews.count==expected && rows.count==expected)
+        precondition(rowsStack.arrangedSubviews.count==expected && groups.count==expected)
+        if let windows {precondition(groups.reduce(0){$0+$1.tiles.count}==windows)}
+        precondition(scroll.contentView.bounds.height>0)
+    }
+    func assertValues(_ expected:[[String]]) {
+        precondition(groups.map{$0.tiles.map{$0.value.stringValue}}==expected)
     }
     @objc private func hideWidget(){setVisible(false)}
     @objc private func openDashboard(){open()}
+    @objc private func checkNow(){check()}
 }
+private final class FlippedWidgetDocument:NSView {override var isFlipped:Bool {true}}
 
 private extension NSRect {var area:CGFloat {isNull || isEmpty ? 0 : width*height}}
 
@@ -420,6 +506,8 @@ private final class Menu:NSObject,NSApplicationDelegate,NSMenuDelegate {
     private var fetching=false;private var failed=false;private var fetchedAt:Date?
     private var timer:Timer?;private var expiryTimer:Timer?;private var task:URLSessionDataTask?
     private var dashboardTask:URLSessionDataTask?;private var openingDashboard=false
+    private var refreshTask:URLSessionDataTask?;private var checkingQuotas=false
+    private var refreshFeedbackTimer:Timer?
     private var widget:FloatingWidget?
     private var lastEvidenceSignature:String?;private var lastEvidenceWrite:Date?
     func applicationDidFinishLaunching(_ n:Notification) {
@@ -427,7 +515,7 @@ private final class Menu:NSObject,NSApplicationDelegate,NSMenuDelegate {
         status.button?.image=NSImage(systemSymbolName:"gauge.with.dots.needle.67percent",accessibilityDescription:"AI plans")
         status.button?.imagePosition = .imageLeading;status.button?.title="Plans …"
         menu.autoenablesItems=false;menu.delegate=self;status.menu=menu
-        widget=FloatingWidget(openDashboard:{[weak self] in self?.openDashboard()})
+        widget=FloatingWidget(openDashboard:{[weak self] in self?.openDashboard()},checkNow:{[weak self] in self?.refresh()})
         if Bundle.main.object(forInfoDictionaryKey:"HeadroomShowWidgetAfterInstall") as? Bool == true,
            let installID=Bundle.main.object(forInfoDictionaryKey:"HeadroomInstallID") as? String,
            UserDefaults.standard.string(forKey:"revealedInstallID") != installID {
@@ -527,7 +615,7 @@ private final class Menu:NSObject,NSApplicationDelegate,NSMenuDelegate {
         }
         menu.addItem(.separator());line("Each plan has independent limits; percentages are not combined.")
         let widgetLabel=widget?.isVisible == true ? "Hide floating widget" : "Show floating widget"
-        for (label,action) in [(widgetLabel,#selector(toggleWidget)),("Open plan dashboard",#selector(openDashboard)),("Refresh",#selector(refresh)),("Quit menu indicator",#selector(quit))] {
+        for (label,action) in [(widgetLabel,#selector(toggleWidget)),("Open plan dashboard",#selector(openDashboard)),("Check quotas now",#selector(refresh)),("Quit menu indicator",#selector(quit))] {
             let row=NSMenuItem(title:label,action:action,keyEquivalent:"");row.target=self;row.isEnabled=true;menu.addItem(row)
         }
     }
@@ -552,10 +640,54 @@ private final class Menu:NSObject,NSApplicationDelegate,NSMenuDelegate {
         alert.addButton(withTitle:"OK");alert.runModal()
     }
     @objc private func toggleWidget(){widget?.setVisible(widget?.isVisible != true)}
-    @objc private func refresh(){poll()}
-    @objc private func quit(){timer?.invalidate();expiryTimer?.invalidate();task?.cancel();dashboardTask?.cancel();NSApplication.shared.terminate(nil)}
+    @objc private func refresh(){
+        guard !checkingQuotas else{return}
+        checkingQuotas=true;refreshFeedbackTimer?.invalidate();widget?.setChecking(true,message:"Verifying the local connection…")
+        // Qualify service identity before sending a write to the loopback port.
+        refreshTask=transport.load(dashboardEndpoint){[weak self] data,response,error in
+            guard let self else{return}
+            let qualified=error==nil && (response as? HTTPURLResponse)?.statusCode==200 && data.flatMap{parseSnapshot($0)}.map{compatible($0)}==true
+            guard qualified else{self.finishRefresh(false);return}
+            var request=URLRequest(url:URL(string:"http://127.0.0.1:8793/api/refresh")!)
+            request.httpMethod="POST";request.httpBody=Data("{}".utf8)
+            request.setValue("application/json",forHTTPHeaderField:"Content-Type")
+            request.setValue("local",forHTTPHeaderField:"X-AIUsage-Action")
+            request.setValue("http://127.0.0.1:8793",forHTTPHeaderField:"Origin")
+            self.refreshTask=self.transport.load(request){[weak self] data,response,error in
+                guard let self else{return}
+                let payload=data.flatMap{try? JSONSerialization.jsonObject(with:$0)} as? [String:Any]
+                self.finishRefresh(error==nil && (response as? HTTPURLResponse)?.statusCode==202 && jsonBool(payload?["synchronizing"])==true)
+            }
+        }
+    }
+    private func finishRefresh(_ success:Bool) {
+        checkingQuotas=false;refreshTask=nil
+        widget?.setChecking(false,message:success ? "Check queued · provider retry delays still apply" : "Check failed · open dashboard for connection details")
+        if success {poll()}
+        refreshFeedbackTimer=Timer.scheduledTimer(withTimeInterval:8,repeats:false){[weak self] _ in self?.widget?.setChecking(false)}
+    }
+    @objc private func quit(){timer?.invalidate();expiryTimer?.invalidate();refreshFeedbackTimer?.invalidate();task?.cancel();dashboardTask?.cancel();refreshTask?.cancel();NSApplication.shared.terminate(nil)}
 }
 
+
+private func syntheticWidgetProviders(at now:Date)->[Provider] {
+    let formatter=ISO8601DateFormatter()
+    func quota(_ id:String,_ label:String,_ remaining:Double?,_ hours:Double?,_ state:String="fresh",_ history:Double?=nil)->Quota {
+        Quota(id:id,label:label,remaining_pct:remaining,last_known_remaining_pct:history,
+            resets_at:hours.map{formatter.string(from:now.addingTimeInterval($0*3600))},
+            fresh_until:formatter.string(from:now.addingTimeInterval(90)),observed_at:formatter.string(from:now),status:state,
+            velocity:Pace(pct_per_hour:nil,confidence:"insufficient",exhausts_before_reset:nil,eta_exhaustion_at:nil))
+    }
+    func provider(_ id:String,_ name:String,_ windows:[Quota],_ status:String="verified")->Provider {
+        Provider(id:id,name:name,status:status,remaining_pct:nil,plan:Plan(verified_tier:nil),windows:windows,limiting_window_id:nil)
+    }
+    return [provider("codex","Codex / ChatGPT",[quota("short","5-hour",93,3),quota("weekly","Weekly",62,144)]),
+      provider("muse","Muse",[quota("window-300m","5-hour",88,2),quota("weekly-10080m","Weekly",37,72)]),
+      provider("zai","z.ai",[quota("short","5-hour",100,nil),quota("weekly","Weekly",84,48),quota("mcp","MCP",96,600)]),
+      provider("cursor","Cursor",[quota("included","Included plan",73,216),quota("models","Cursor models",99.9,216),quota("third","Third-party models",100,216)]),
+      provider("antigravity","Antigravity",[quota("g-short","Gemini 5-hour",70,4),quota("g-weekly","Gemini weekly",40,120),quota("c-short","Claude/GPT 5-hour",55,4),quota("c-weekly","Claude/GPT weekly",90,144)]),
+      provider("claude","Claude",[quota("short","5-hour",nil,2,"stale",42),quota("weekly","Weekly",nil,96,"stale",19)],"error")]
+}
 
 if CommandLine.arguments.contains("--widget-self-test") {
     let app=NSApplication.shared;app.setActivationPolicy(.accessory)
@@ -571,7 +703,31 @@ if CommandLine.arguments.contains("--widget-self-test") {
         }
         widget.update(providers,stale:false,at:now);widget.assertLayoutRows(count)
     }
-    print("Headroom native widget layout and dynamic row checks passed.");exit(0)
+    let fixtures=syntheticWidgetProviders(at:now)
+    widget.update(fixtures,stale:false,at:now);widget.assertLayoutRows(6,windows:16)
+    widget.assertValues([["93%","62%"],["88%","37%"],["100%","84%","96%"],["73%","99.9%","100%"],["70%","40%","55%","90%"],["Last 42%","Last 19%"]])
+    let muse=fixtures[1];let weekly=muse.windows[1]
+    let expired=widgetReading(weekly,providerStatus:"verified",serviceStale:false,maxAgeSeconds:nil,at:now.addingTimeInterval(73*3600))
+    precondition(expired.value=="Reset passed" && expired.meter==nil && expired.detail=="Last 37% before reset")
+    let serviceStale=widgetReading(muse.windows[0],providerStatus:"verified",serviceStale:true,maxAgeSeconds:nil,at:now)
+    precondition(serviceStale.value=="Last 88%" && serviceStale.meter==nil)
+    let exhausted=Quota(id:"empty",label:"Opus weekly",remaining_pct:0,last_known_remaining_pct:nil,resets_at:nil,
+        fresh_until:formatter.string(from:now.addingTimeInterval(90)),observed_at:stamp,status:"fresh",
+        velocity:Pace(pct_per_hour:nil,confidence:"insufficient",exhausts_before_reset:nil,eta_exhaustion_at:nil))
+    precondition(widgetReading(exhausted,providerStatus:"verified",serviceStale:false,maxAgeSeconds:nil,at:now).meter==0)
+    let unlimited=Quota(id:"unlimited",label:"Individual allowance",remaining_pct:nil,last_known_remaining_pct:nil,resets_at:nil,
+        fresh_until:formatter.string(from:now.addingTimeInterval(90)),observed_at:stamp,status:"unlimited",velocity:exhausted.velocity)
+    let unlimitedReading=widgetReading(unlimited,providerStatus:"verified",serviceStale:false,maxAgeSeconds:nil,at:now)
+    precondition(unlimitedReading.value=="Unlimited" && unlimitedReading.meter==nil)
+    widget.setChecking(true,message:"Checking");widget.assertLayoutRows(6,windows:16);widget.setChecking(false)
+    print("Headroom native widget layout, every-window values, freshness, and dynamic row checks passed.");exit(0)
+}
+
+if CommandLine.arguments.contains("--widget-preview") || Bundle.main.object(forInfoDictionaryKey:"HeadroomSyntheticWidgetPreview") as? Bool == true {
+    let app=NSApplication.shared;app.setActivationPolicy(.regular)
+    let widget=FloatingWidget(openDashboard:{},testing:true)
+    widget.update(syntheticWidgetProviders(at:Date()),stale:false);widget.setVisible(true)
+    app.activate(ignoringOtherApps:true);withExtendedLifetime(widget){app.run()};exit(0)
 }
 
 if let fixtureIndex=CommandLine.arguments.firstIndex(of:"--selection-fixture") {
