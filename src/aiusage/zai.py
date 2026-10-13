@@ -94,13 +94,14 @@ def normalize(payload,store,key,region,observed_at=None,organization=None,projec
         if marker:minutes=None
         # A window ID names the denominator itself (type and cadence), never
         # the other limits present in this payload, so adding or removing a
-        # limit cannot rebind an existing series. primary/secondary are
-        # reserved for TOKENS_LIMIT, whose series already use them;
-        # CREDIT_LIMIT is always type-qualified, and zai-mcp is reserved
+        # limit cannot rebind an existing series. Old primary/secondary IDs
+        # could have contained either credits or tokens; leave those historic
+        # series untouched and start explicitly typed series for both.
+        # zai-mcp is reserved
         # for the known monthly TIME_LIMIT marker. Non-marker TIME_LIMITs
         # are always cadence-qualified.
         if kind=='TOKENS_LIMIT':
-            key_id='primary' if minutes==300 else 'secondary' if minutes==10080 else 'quota-tokens_limit-'+str(minutes)
+            key_id='quota-tokens_limit-'+str(minutes)
         elif kind=='CREDIT_LIMIT':
             key_id='quota-credit_limit-'+str(minutes) if minutes is not None else 'quota-credit_limit'
         elif marker:

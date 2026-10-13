@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from datetime import timedelta
 import urllib.error
 from unittest.mock import patch
 from aiusage import zai
@@ -24,7 +25,7 @@ class ZaiTests(unittest.TestCase):
         self.store=Store(self.root/'data')
     def test_explicit_percentage_matching_counter_units_and_windows(self):
         result=zai.normalize(payload(),self.store,'synthetic-key','global')
-        self.assertEqual([w['id'] for w in result['windows']],['primary','quota-credit_limit-10080'])
+        self.assertEqual([w['id'] for w in result['windows']],['quota-tokens_limit-300','quota-credit_limit-10080'])
         self.assertEqual(result['windows'][0]['remaining_pct'],60)
         self.assertEqual(result['account_ref'],self.store.fingerprint('zai|configured|global|synthetic-key'))
         self.assertNotIn('synthetic-key',json.dumps(result))
@@ -102,13 +103,13 @@ class ZaiTests(unittest.TestCase):
         credit={'type':'CREDIT_LIMIT','unit':3,'number':5,'percentage':25}
         forward,mapping=run([tokens,credit]);_,reversed_mapping=run([credit,tokens])
         self.assertEqual(mapping,reversed_mapping)
-        self.assertEqual(mapping['primary'],(60,'5-hour',300))
+        self.assertEqual(mapping['quota-tokens_limit-300'],(60,'5-hour',300))
         self.assertEqual(mapping['quota-credit_limit-300'][0],75)
         self.assertNotEqual(mapping['quota-credit_limit-300'][1],'5-hour')
         self.assertEqual(forward['status'],'verified')
         weekly,mapping=run([{'type':'TOKENS_LIMIT','unit':6,'number':1,'percentage':40},
                              {'type':'CREDIT_LIMIT','unit':6,'number':1,'percentage':25}])
-        self.assertEqual(mapping['secondary'][0],60);self.assertEqual(mapping['quota-credit_limit-10080'][0],75)
+        self.assertEqual(mapping['quota-tokens_limit-10080'][0],60);self.assertEqual(mapping['quota-credit_limit-10080'][0],75)
     def test_time_limit_multiple_cadences_keep_marker_and_qualify_other(self):
         def run(limits):
             p=payload();p['data']['limits']=limits
@@ -132,7 +133,7 @@ class ZaiTests(unittest.TestCase):
         self.assertEqual(run([credit])[credit_id],(75,'Credit 5-hour',300))
         self.assertNotIn('primary',run([credit]))
         self.assertEqual(run([credit,tokens])[credit_id],run([credit])[credit_id])
-        self.assertEqual(run([tokens])[ 'primary'],run([credit,tokens])['primary'])
+        self.assertEqual(run([tokens])['quota-tokens_limit-300'],run([credit,tokens])['quota-tokens_limit-300'])
         self.assertEqual(run([timed])[time_id],(80,'Time 5-hour',300))
         self.assertNotIn('zai-mcp',run([timed]))
         self.assertEqual(run([timed,marker_limit])[time_id],run([timed])[time_id])
@@ -146,6 +147,20 @@ class ZaiTests(unittest.TestCase):
             p=payload();p['data']['limits']=limits
             result=zai.normalize(p,self.store,'k','global')
             self.assertEqual(result['status'],'partial');self.assertFalse(result['windows'])
+
+    def test_typed_token_series_cannot_inherit_ambiguous_legacy_credit_history(self):
+        result=zai.normalize(payload(),self.store,'k','global')
+        window=result['windows'][0]
+        for minute in range(1,8):
+            self.store.record_window('zai',result['account_ref'],{**window,
+                'id':'primary','used_pct':10,'remaining_pct':90,
+                'observed_at':(utc_now()-timedelta(minutes=minute)).isoformat()})
+        self.store.save_provider(result)
+        current=next(p for p in self.store.portfolio()['providers'] if p['id']=='zai')['windows'][0]
+        self.assertEqual(current['id'],'quota-tokens_limit-300')
+        self.assertLessEqual(current['velocity']['points'],1)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM observations WHERE window_id='primary'").fetchone()[0],7)
 
 
 if __name__=='__main__':unittest.main()
