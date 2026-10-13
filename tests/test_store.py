@@ -27,6 +27,7 @@ class StoreTests(unittest.TestCase):
         p=self.store.portfolio();self.assertEqual(len(p['providers']),6)
         self.assertTrue(all(x['remaining_pct'] is None for x in p['providers']))
         self.assertFalse(any('_account_ref' in x for x in p['providers']))
+        self.assertTrue(all(x['plan']['declared_tier'] is None for x in p['providers']))
     def test_fresh_measurement(self):
         self.store.save_provider(self.snapshot());p=self.codex()
         self.assertEqual(p['remaining_pct'],10);self.assertEqual(p['status'],'verified')
@@ -96,5 +97,53 @@ class StoreTests(unittest.TestCase):
         self.assertIsNotNone(self.codex()['wallet'])
         with patch('aiusage.store.utc_now',return_value=self.now+timedelta(seconds=90)):
             self.assertIsNone(self.codex()['wallet'])
+
+    def test_legacy_numeric_strings_are_coerced_and_out_of_range_withheld(self):
+        data=self.snapshot();data['windows'][0].update(remaining_pct='10',used_pct='90')
+        self.store.save_provider(data)
+        self.assertEqual(self.codex()['remaining_pct'],10.0)
+        self.assertIsInstance(self.codex()['windows'][0]['used_pct'],float)
+        data['windows'][0]['remaining_pct']='101';self.store.save_provider(data)
+        self.assertIsNone(self.codex()['remaining_pct'])
+        self.assertEqual(self.codex()['windows'][0]['status'],'unknown')
+
+    def test_codex_legacy_alias_is_read_only_and_bounded(self):
+        account='account-a';reset=iso(self.now+timedelta(hours=1))
+        def add(window,minutes,minutes_ago,account_ref=account,used=20):
+            self.store.record_window('codex',account_ref,{'id':window,'label':'Legacy' if '-' in window else 'Current',
+                'status':'fresh','used_pct':used,'remaining_pct':100-used,'window_minutes':minutes,
+                'resets_at':reset,'observed_at':iso(self.now-timedelta(minutes=minutes_ago))})
+        add('primary-300m',300,30);add('secondary-10080m',10080,25);add('primary',300,5)
+        add('primary-300m',10080,20);add('secondary-10080m',300,15);add('codex-spark',300,10)
+        add('primary-300m',300,1,account_ref='account-b',used=99)
+        with self.store.connect() as db:before=[tuple(row) for row in db.execute('SELECT window_id,account_ref,window_minutes FROM observations ORDER BY window_id,observed_at')]
+        history=self.store.history('codex',hours=2,account=account);series={item['window_id']:item for item in history['series']}
+        self.assertEqual(len(series['primary']['points']),2);self.assertEqual(len(series['secondary']['points']),1)
+        self.assertEqual(len(series['primary-300m']['points']),1);self.assertEqual(len(series['secondary-10080m']['points']),1)
+        self.assertEqual(len(series['codex-spark']['points']),1)
+        self.store.portfolio()
+        with self.store.connect() as db:after=[tuple(row) for row in db.execute('SELECT window_id,account_ref,window_minutes FROM observations ORDER BY window_id,observed_at')]
+        self.assertEqual(before,after)
+    def test_codex_legacy_alias_supplies_velocity_only_for_matching_duration(self):
+        reset=iso(self.now+timedelta(hours=1));base=self.snapshot()
+        base['windows']=[{'id':'primary','label':'5-hour','used_pct':30,'remaining_pct':70,'status':'fresh',
+            'observed_at':iso(self.now),'resets_at':reset,'window_minutes':300,'source':'test'}]
+        self.store.save_provider(base)
+        for minutes_ago,used in ((5,20),(4,22),(3,24),(2,26),(1,28)):
+            self.store.record_window('codex','account-a',{'id':'primary-300m','label':'5-hour','status':'fresh',
+                'used_pct':used,'remaining_pct':100-used,'window_minutes':300,'resets_at':reset,
+                'observed_at':iso(self.now-timedelta(minutes=minutes_ago))})
+        window=self.codex()['windows'][0]
+        self.assertEqual(window['velocity']['confidence'],'observed');self.assertGreaterEqual(window['velocity']['points'],5)
+    def test_codex_wrong_duration_legacy_does_not_supply_velocity(self):
+        reset=iso(self.now+timedelta(hours=1));base=self.snapshot()
+        base['windows']=[{'id':'primary','label':'5-hour','used_pct':30,'remaining_pct':70,'status':'fresh',
+            'observed_at':iso(self.now),'resets_at':reset,'window_minutes':300,'source':'test'}]
+        self.store.save_provider(base)
+        for minutes_ago,used in ((5,20),(4,22),(3,24),(2,26),(1,28)):
+            self.store.record_window('codex','account-a',{'id':'primary-300m','label':'5-hour','status':'fresh',
+                'used_pct':used,'remaining_pct':100-used,'window_minutes':10080,'resets_at':reset,
+                'observed_at':iso(self.now-timedelta(minutes=minutes_ago))})
+        self.assertNotEqual(self.codex()['windows'][0]['velocity']['confidence'],'observed')
 
 if __name__=='__main__':unittest.main()

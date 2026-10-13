@@ -27,7 +27,7 @@ Headroom brings **Codex / ChatGPT, Muse, z.ai, Cursor, Antigravity, and Claude**
 <!-- headroom:snapshot:start -->
 **Current source:** version `0.1.0` · 6 built-in provider collectors · readings expire after 90 seconds · default polling 30 seconds.
 
-<sub>These facts are refreshed from the committed source. Source fingerprint: `0b3fbffbf2ce0464`.</sub>
+<sub>These facts are refreshed from the committed source. Source fingerprint: `c75a063b2454186b`.</sub>
 <!-- headroom:snapshot:end -->
 
 ## What you get
@@ -74,12 +74,13 @@ The Makefile defaults to Homebrew's Python 3.11 path. Set `PYTHON` as above to u
 
 ```sh
 make install PYTHON=python3
-python3 scripts/install_menubar.py
+make install-native PYTHON=python3
+python3 scripts/diagnostics.py
 ```
 
-The first command registers the dashboard as a per-user LaunchAgent. The second builds, ad-hoc signs, checks, and installs `~/Applications/Headroom.app`. Installation uses the absolute checkout path; reinstall the LaunchAgent after moving the source.
+The service runs a verified, read-only code snapshot under `~/.local/share/aiusage/releases/`. The native installer builds, checks, ad-hoc signs, and installs `~/Applications/Headroom.app` from that same source fingerprint. Moving or editing the checkout does not change the running installation. Install both components from the same unchanged source when updating.
 
-The menu installer replaces the owned `com.xxx.codex-usage-menu` companion and backs up its previous plist when present. Read [operations and recovery](docs/operations.md) for service names, diagnostics, backups, and rollback.
+Installers preserve previous bundles, LaunchAgents, receipts, credentials and history, and roll back an activation that fails verification. Read [operations and recovery](docs/operations.md) for service names, diagnostics, backups, and interrupted-install recovery. The app is locally ad-hoc signed; there is no notarized downloadable release.
 
 <!-- headroom:native-note:start -->
 The floating widget appears on the first launch of the native companion. Drag it to your preferred position; its position and visibility preference are remembered. Use the Headroom menu to hide or show it. Collection continues while the widget is hidden.
@@ -133,6 +134,8 @@ Existing provider sign-ins              Local Codex receipts
 
 Quota history and settings live in `~/.local/share/aiusage/`. Account continuity uses a private HMAC salt; the existing model ledger is reused at `~/.codex/model-usage/data/usage.sqlite3`. Back up the quota directory as a unit so history and identity continuity stay aligned.
 
+The most recent 93 days stay in the active quota database. Older observations and alerts move to private monthly SQLite archives after a verified durable copy. Full CSV export includes active and archived observations. History is preserved, so total archive storage grows over time.
+
 Headroom does not retain conversation text, raw account profiles, credentials, or cookies. Collectors contact fixed provider endpoints and refuse credential-bearing redirects. The local server validates Host and Origin and requires a local action header for writes. Public repository assets use synthetic data.
 
 ## Documentation and development
@@ -141,6 +144,7 @@ Headroom does not retain conversation text, raw account profiles, credentials, o
 | --- | --- |
 | [Measurement contracts](docs/metrics.md) | Units, freshness, reset continuity, forecasting, and receipt provenance. |
 | [Operations and recovery](docs/operations.md) | Installation, safe diagnostics, data backup, and rollback. |
+| [Release qualification](docs/release.md) | Local build gates, installed identity, recovery checks, and the limits of each receipt. |
 | [Muse collector protocol](docs/muse-protocol.md) | Direct OAuth integration and sanitized response handling. |
 | [Built-in provider collectors](docs/providers.md) | Authentication sources, integration boundaries, and migration. |
 | [Third-party notices](THIRD_PARTY_NOTICES.md) | CodexBar protocol attribution and upstream license. |

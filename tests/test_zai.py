@@ -80,6 +80,18 @@ class ZaiTests(unittest.TestCase):
     def test_no_credentials_has_actionable_auth_status(self):
         with patch.object(zai,'credentials',side_effect=PermissionError):
             self.assertEqual(zai.collect(self.store)['status'],'auth_required')
+    def test_reported_percentage_wins_and_conflicting_derived_counters_are_unknown(self):
+        p=payload();raw=p['data']['limits'][0];raw.update(percentage=40,usage=100,currentValue=10,remaining=10)
+        self.assertEqual(zai.normalize(p,self.store,'k','global')['windows'][0]['used_pct'],40)
+        raw.pop('percentage');result=zai.normalize(p,self.store,'k','global')
+        self.assertIsNone(result['windows'][0]['used_pct']);self.assertEqual(result['status'],'partial')
+        raw.update(currentValue=40,remaining=60)
+        self.assertEqual(zai.normalize(p,self.store,'k','global')['windows'][0]['used_pct'],40)
+    def test_weekly_far_future_and_seconds_epoch_reset_are_withheld(self):
+        p=payload();p['data']['limits'][1]['nextResetTime']=int((utc_now().timestamp()+30*86400)*1000)
+        self.assertIsNone(zai.normalize(p,self.store,'k','global')['windows'][1]['resets_at'])
+        p['data']['limits'][0]['nextResetTime']=int(utc_now().timestamp()+3600)
+        self.assertIsNone(zai.normalize(p,self.store,'k','global')['windows'][0]['resets_at'])
 
 
 if __name__=='__main__':unittest.main()

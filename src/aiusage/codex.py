@@ -7,7 +7,7 @@ import re
 import time
 from datetime import datetime, timezone
 import urllib.error
-from .analytics import iso, number
+from .analytics import iso, number,plausible_reset
 from .provider_http import request_json
 
 SOURCE='codex_oauth_usage'
@@ -61,7 +61,7 @@ def _window(raw,key,label,stamp):
     minutes=seconds//60 if type(seconds) is int and 60<=seconds<=5270400*60 else None
     return {'id':key,'label':label,'used_pct':float(used) if used is not None else None,
         'remaining_pct':float(max(0,100-used)) if used is not None else None,
-        'resets_at':_reset(raw.get('reset_at')) if isinstance(raw,dict) else None,'window_minutes':minutes,
+        'resets_at':plausible_reset(_reset(raw.get('reset_at')),stamp,minutes) if isinstance(raw,dict) else None,'window_minutes':minutes,
         'status':'fresh' if used is not None else 'unknown','observed_at':stamp,'source':SOURCE}
 
 

@@ -87,6 +87,13 @@ class Regressions(unittest.TestCase):
             s = Store(Path(root) / 'db')
             s.observe(dict(key='r:date', model='gpt-date', timestamp='2026-10-12T03:00:00Z', total_tokens=10))
             self.assertEqual(s.summary([], 0)['daily'][0]['day'], '2026-10-11')
+    def test_periods_exclude_future_receipts_but_preserve_all_records(self):
+        with tempfile.TemporaryDirectory() as root:
+            s=Store(Path(root)/'db');current=dt.datetime.now(dt.timezone.utc)
+            s.observe(dict(key='past',model='test',timestamp=(current-dt.timedelta(seconds=5)).isoformat(),total_tokens=10))
+            s.observe(dict(key='future',model='test',timestamp=(current+dt.timedelta(days=1)).isoformat(),total_tokens=100))
+            self.assertEqual(s.summary([],1)['totals']['total_tokens'],10)
+            self.assertEqual(s.summary([],0)['totals']['total_tokens'],110)
 
     def test_unparsed_wire_can_merge_unique_same_thread_receipt(self):
         with tempfile.TemporaryDirectory() as root:

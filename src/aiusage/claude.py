@@ -10,10 +10,39 @@ from .analytics import iso, number, timestamp
 API = 'https://api.anthropic.com/api/oauth/'
 LIMIT = 1024 * 1024
 _profile_lock = threading.Lock()
-_profile_cache = {'token':None,'data':None,'until':0,'observed_at':None}
+_credential_lock = threading.Lock()
+_keychain_blocked = False
+_profile_cache = {'credential_ref':None,'data':None,'until':0,'observed_at':None}
 WINDOWS = {'five_hour': ('5-hour', 300), 'seven_day': ('Weekly', 10080),
            'seven_day_sonnet': ('Sonnet weekly', 10080), 'seven_day_opus': ('Opus weekly', 10080),
            'seven_day_oauth_apps': ('OAuth apps weekly', 10080), 'seven_day_cowork': ('Cowork weekly', 10080)}
+
+
+def retry_credentials():
+    global _keychain_blocked
+    with _credential_lock:_keychain_blocked=False
+
+
+def forget_profile():
+    with _profile_lock:
+        _profile_cache.update(credential_ref=None,data=None,until=0,observed_at=None)
+
+
+def credentials():
+    global _keychain_blocked
+    with _credential_lock:
+        if _keychain_blocked:raise PermissionError('Claude credential approval required')
+        try:
+            result=subprocess.run(['/usr/bin/security','find-generic-password','-s','Claude Code-credentials','-w'],
+                capture_output=True,timeout=5,check=False)
+        except subprocess.TimeoutExpired:
+            _keychain_blocked=True;raise PermissionError('Claude credential approval required') from None
+        if result.returncode or len(result.stdout)>65536:raise PermissionError('Claude OAuth unavailable')
+        raw=json.loads(result.stdout).get('claudeAiOauth') or {}
+        token=raw.get('accessToken')
+        if not isinstance(token,str) or not token or len(token)>16384 or any(c in token for c in '\r\n'):
+            raise PermissionError('Claude OAuth unavailable')
+        return token
 
 
 def failure(code, message):
@@ -70,22 +99,23 @@ def normalize(usage, profile, store, observed_at=None):
 
 def collect(store):
     try:
-        result = subprocess.run(['/usr/bin/security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-            capture_output=True, timeout=5, check=False)
-        if result.returncode != 0: return failure('auth_required', 'Sign in to Claude Code to connect OAuth usage.')
-        credentials = json.loads(result.stdout).get('claudeAiOauth') or {}
-        token = credentials.get('accessToken')
-        if not isinstance(token, str) or not token: return failure('auth_required', 'Claude OAuth credentials are unavailable.')
+        token=credentials();sent=iso()
         usage = read_json('usage', token)
         with _profile_lock:
-            if _profile_cache['token'] != token or _profile_cache['until'] < time.monotonic():
-                _profile_cache.update(token=token,data=read_json('profile',token),until=time.monotonic()+300,observed_at=iso())
+            credential_ref=store.fingerprint('claude|profile-cache|'+token)
+            if _profile_cache['credential_ref'] != credential_ref or _profile_cache['until'] < time.monotonic():
+                _profile_cache.update(credential_ref=credential_ref,data=read_json('profile',token),until=time.monotonic()+300,observed_at=iso())
             profile = _profile_cache['data']
-        result=normalize(usage,profile,store)
+        result=normalize(usage,profile,store,sent)
         result['tier_verified_at']=_profile_cache['observed_at']
         return result
+    except PermissionError:
+        forget_profile()
+        return failure('auth_required','Sign in to Claude Code, approve normal credential access if requested, then Refresh now.')
     except urllib.error.HTTPError as error:
-        if error.code in (401, 403): return failure('auth_required', 'Claude OAuth sign-in needs renewal in Claude Code.')
+        if error.code in (401, 403):
+            forget_profile()
+            return failure('auth_required', 'Claude OAuth sign-in needs renewal in Claude Code.')
         if error.code==429:
             result=failure('rate_limited','Claude quota API is rate limited; current percentages are withheld while retrying with backoff.')
             try:delay=float(error.headers.get('Retry-After','60'))

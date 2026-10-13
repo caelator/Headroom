@@ -74,6 +74,10 @@ class CodexTests(unittest.TestCase):
             error=urllib.error.HTTPError(codex.ENDPOINT,code,'private-token',{'Retry-After':'nan'},None)
             with patch.object(codex,'credentials',return_value=('t','demo-account')),patch.object(codex,'request_json',side_effect=error):result=codex.collect(self.store)
             self.assertEqual(result['error']['code'],expected);self.assertNotIn('private-token',json.dumps(result))
+    def test_implausible_reset_keeps_percentage_without_projection_boundary(self):
+        p=payload();p['rate_limit']['primary_window']['reset_at']=int(utc_now().timestamp()+365*86400)
+        window=codex.normalize(p,self.store,'demo-account')['windows'][0]
+        self.assertEqual(window['remaining_pct'],60);self.assertIsNone(window['resets_at'])
 
 
 if __name__=='__main__':unittest.main()

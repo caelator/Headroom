@@ -282,21 +282,41 @@
 
   const effStatus = (p) => {
     if (p.status === 'verified' || p.status === 'partial') {
-      if (state.offline || (p.windows.some(w=>['fresh','unlimited'].includes(w.status)) && !p.windows.some(w=>['fresh','unlimited'].includes(winState(w,p))))) return 'stale';
+      if (state.offline || (p.windows.length && !p.windows.some(w=>['fresh','unlimited'].includes(winState(w,p))))) return 'stale';
     }
     return p.status;
   };
   const isDegraded = (p) => state.offline || DEGRADED.has(p.status);
+
+  function freshnessDeadline(w) {
+    const observed=parseTs(w.observed_at),now=Date.now();
+    if (observed===null || observed>now+5000) return null;
+    const supplied=state.data?.freshness_policy?.max_age_seconds;
+    const age=isNum(supplied) && supplied>0 ? Math.min(90,supplied)*1000 : 90000;
+    const deadline=observed+age,declared=parseTs(w.fresh_until);
+    return declared===null ? deadline : Math.min(deadline,declared);
+  }
 
   function winState(w, p) {
     let st = WIN_STATES.includes(w.status) ? w.status : 'unknown';
     if (st === 'fresh' || st === 'unlimited') {
       const r = parseTs(w.resets_at);
       if (r !== null && r <= Date.now()) st = 'expired';
-      else if (parseTs(w.fresh_until) !== null && parseTs(w.fresh_until) <= Date.now()) st = 'stale';
+      else if (freshnessDeadline(w)===null || freshnessDeadline(w)<=Date.now()) st = 'stale';
       else if (isDegraded(p)) st = 'stale';
     }
     return st;
+  }
+
+  function effectiveWindow(p,wins=p.windows.map(w=>({w,st:winState(w,p)}))) {
+    const measured=wins.filter(x=>x.st==='fresh' && isNum(x.w.remaining_pct) && x.w.remaining_pct>=0 && x.w.remaining_pct<=100);
+    const exhausted=measured.find(x=>x.w.remaining_pct===0);
+    if (exhausted) return exhausted;
+    const risk=measured.filter(x=>x.w.velocity?.confidence==='observed' && x.w.velocity.exhausts_before_reset===true &&
+      parseTs(x.w.velocity.eta_exhaustion_at)>Date.now() && parseTs(x.w.velocity.eta_exhaustion_at)<parseTs(x.w.resets_at));
+    if (risk.length) return risk.sort((a,b)=>parseTs(a.w.velocity.eta_exhaustion_at)-parseTs(b.w.velocity.eta_exhaustion_at))[0];
+    if (measured.length) return measured.reduce((a,b)=>a.w.remaining_pct<=b.w.remaining_pct?a:b);
+    return wins.find(x=>x.st==='unlimited') || wins.find(x=>x.w.id===p.limiting_window_id) || wins[0] || null;
   }
 
   function tierInfo(p) {
@@ -350,7 +370,8 @@
   }
 
   function headlineFor(p, lim, wins) {
-    const lastKnown = lim && isNum(lim.w.remaining_pct) ? lim.w.remaining_pct : isNum(p.remaining_pct) ? p.remaining_pct : null;
+    const lastKnown = lim && isNum(lim.w.last_known_remaining_pct) ? lim.w.last_known_remaining_pct :
+      lim && isNum(lim.w.remaining_pct) ? lim.w.remaining_pct : null;
     const winLabel = lim ? lim.w.label : null;
     const byStatus = { auth_required: ['Sign-in needed', 'info'], unavailable: ['Unavailable', 'muted'], error: ['Error', 'crit'] };
     if (byStatus[p.status]) {
@@ -364,8 +385,8 @@
       };
     }
     const st = lim ? lim.st : null;
-    if (st === 'fresh' || (!lim && !state.offline && p.status !== 'stale' && isNum(p.remaining_pct))) {
-      const pct = lim && isNum(lim.w.remaining_pct) ? lim.w.remaining_pct : p.remaining_pct;
+    if (st === 'fresh') {
+      const pct = lim?.w.remaining_pct;
       if (isNum(pct)) {
         return {
           kind: 'value',
@@ -653,7 +674,7 @@
     }
     row.append(h('a', {
       class: 'btn', href: historyLink(p.id), 'data-fk': `hist:${p.id}`,
-      onclick: () => { state.history.provider = p.id; },
+      onclick: (event) => { event.preventDefault(); navigateHistory(p.id); },
     }, 'History'));
     return row;
   }
@@ -661,7 +682,7 @@
   function buildCard(p, idx) {
     const eff = effStatus(p);
     const wins = p.windows.map((w) => ({ w, st: winState(w, p) }));
-    const lim = wins.find((x) => x.w.id === p.limiting_window_id) || null;
+    const lim = effectiveWindow(p,wins);
     const head = headlineFor(p, lim, wins);
     const tier = tierInfo(p);
     const titleId = `card-title-${idx}`;
@@ -772,9 +793,9 @@
   function renderGlance() {
     $('#glance').replaceChildren(...state.data.providers.map(p => {
       const wins=p.windows.map(w=>({w,st:winState(w,p)}));
-      const lim=wins.find(x=>x.w.id===p.limiting_window_id)||null;
+      const lim=effectiveWindow(p,wins);
       const head=headlineFor(p,lim,wins);
-      return h('a',{class:`glance-item lvl-${head.level}`,href:historyLink(p.id),onclick:()=>{state.history.provider=p.id;}},
+      return h('a',{class:`glance-item lvl-${head.level}`,href:historyLink(p.id),onclick:event=>{event.preventDefault();navigateHistory(p.id);}},
         h('span',{class:'glance-name'},p.id==='codex'?'Codex':p.name),
         h('strong',{class:`lvl-text-${head.level}`},head.text),
         h('span',{class:'muted small'},lim?lim.w.label:'quota unavailable'));
@@ -805,7 +826,10 @@
     const provs = state.data ? state.data.providers : [];
     const hs = state.history;
     if (!state.data) return;
-    if (!provs.some((p) => p.id === hs.provider)) hs.provider = provs.length ? provs[0].id : null;
+    if (!provs.some((p) => p.id === hs.provider)) {
+      hs.provider=provs.length ? provs[0].id : null;
+      if (state.view==='history') updateViewHash();
+    }
   }
 
   function renderHistoryControls() {
@@ -1398,14 +1422,14 @@
   function expiredSig(d) {
     const now = Date.now();
     return d.providers.map((p) => p.windows.map((w) => {
-      const t = parseTs(w.resets_at), f = parseTs(w.fresh_until);
-      return t !== null && t <= now ? 'e' : f !== null && f <= now ? 's' : 'f';
+      return winState(w,p);
     }).join('')).join('.');
   }
 
   function commit() {
     if (!state.data) { renderOverviewEmpty(); return; }
-    const key = `${state.raw}|${state.offline}|${expiredSig(state.data)}`;
+    const semantic={...state.data};delete semantic.updated_at;delete semantic.service;
+    const key = `${JSON.stringify(semantic)}|${state.offline}|${expiredSig(state.data)}`;
     if (key === state.renderKey) return;
     state.renderKey = key;
     withFocusKept(renderAll);
@@ -1427,13 +1451,20 @@
     if (state.view === 'overview' && !state.summary.loading && now - state.summary.fetchedAt > LOCAL_REFRESH_MS) loadSummary();
   }
 
+  function validService(snapshot) {
+    const service=snapshot?.service;
+    if (service?.name!=='headroom' || service.api_version!==1) return false;
+    const expected=typeof document==='undefined' ? null : document.querySelector('meta[name="headroom-source"]')?.content;
+    return !expected || service.source_fingerprint===expected;
+  }
+
   async function pollSnapshot() {
     if (state.polling) return;
     state.polling = true;
     clearTimeout(state.pollTimer);
     try {
       const res = await api('/api/plans');
-      if (!res.ok || !res.json || !Array.isArray(res.json.providers)) {
+      if (!res.ok || !res.json || !Array.isArray(res.json.providers) || !validService(res.json)) {
         throw new Error(res.ok ? 'unexpected response from /api/plans' : describeError(res));
       }
       state.data = normalizeSnapshot(res.json);
@@ -1491,6 +1522,7 @@
     }
     document.title = `Headroom · ${VIEW_TITLES[v]}`;
     if (focus) $(`#t-${v}`).focus();
+    if (v!=='history' || state.history.provider!==null) updateViewHash();
     if (v === 'overview') loadSummary();
     else if (v === 'history') { renderHistoryControls(); loadHistory(); }
     else if (v === 'models') loadLocal();
@@ -1499,6 +1531,11 @@
 
   function historyLink(provider) {
     return `#history?provider=${encodeURIComponent(provider)}&hours=${state.history.hours}&metric=${state.history.metric}`;
+  }
+
+  function navigateHistory(provider) {
+    state.history.provider=provider;state.history.data=null;state.history.error=null;
+    showView('history',true);updateViewHash();
   }
 
   function updateViewHash() {
@@ -1510,13 +1547,14 @@
     const [v,query=''] = location.hash.replace(/^#/, '').split('?');
     const params=new URLSearchParams(query);
     if (v==='history') {
+      state.history.provider=null;state.history.hours=24;state.history.metric='remaining';
       const provider=params.get('provider');
       if (provider && /^[a-z0-9_-]{1,80}$/.test(provider)) state.history.provider=provider;
       const hours=Number(params.get('hours'));
       if ([6,24,72,168].includes(hours)) state.history.hours=hours;
       if (['remaining','used'].includes(params.get('metric'))) state.history.metric=params.get('metric');
     }
-    if (v==='models' && params.has('days') && [0,1,7,30].includes(Number(params.get('days')))) state.local.days=Number(params.get('days'));
+    if (v==='models') state.local.days=params.has('days') && [0,1,7,30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 7;
     return VIEWS.includes(v) ? v : null;
   };
 

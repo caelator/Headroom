@@ -1,6 +1,8 @@
 """Import only authenticated Codex quota fields, never conversations or credit balances."""
 from pathlib import Path
 import json
+import hashlib
+import sqlite3
 from datetime import datetime, timezone
 from .analytics import iso, percentage
 from .identity import CODEX_HOME, codex_account_id
@@ -15,10 +17,15 @@ class CodexQuotaHistory:
         with self.store.connect() as db:
             old=db.execute('SELECT * FROM imports WHERE path=?',(str(path),)).fetchone()
         offset,state=0,{}
-        if old and old['inode']==inode and old['offset']<=stat.st_size:
-            offset,state=old['offset'],json.loads(old['state'])
-        if offset==stat.st_size:return
         with path.open('rb') as f:
+            prefix=hashlib.sha256(f.read(min(stat.st_size,256))).hexdigest()
+            if old and old['inode']==inode and old['offset']<=stat.st_size:
+                try:previous=json.loads(old['state'])
+                except ValueError:previous={}
+                if isinstance(previous,dict) and previous.get('_prefix')==prefix:
+                    offset,state=old['offset'],previous
+            state['_prefix']=prefix
+            if offset==stat.st_size:return
             f.seek(offset)
             read_bytes=0
             with self.store.lock,self.store.connect() as db:
@@ -39,6 +46,7 @@ class CodexQuotaHistory:
                         # Keep only a HMAC of the source account, not its raw id.
                         owner=p.get('creator_account_id')
                         state['account']=self.store.fingerprint('codex|'+str(owner)) if owner else None
+                        state['model']=None
                     elif e.get('type')=='turn_context':state['model']=p.get('model')
                     elif e.get('type')=='event_msg' and p.get('type')=='token_count':
                         q=p.get('rate_limits')or{}
@@ -61,13 +69,16 @@ class CodexQuotaHistory:
                                 'used_pct':str(used),'remaining_pct':str(max(0,100-used)),
                                 'window_minutes':mins,'resets_at':reset,'observed_at':e.get('timestamp'),
                                 'status':'fresh','source':'codex_authenticated_rate_limit_record'},db)
-                db.execute('INSERT OR REPLACE INTO imports VALUES (?,?,?,?)',(str(path),inode,offset,json.dumps(state)))
+                db.execute('INSERT OR REPLACE INTO imports(path,inode,offset,state) VALUES (?,?,?,?)',(str(path),inode,offset,json.dumps(state)))
 
     def scan(self):
         account_id=codex_account_id()
         if not account_id:return
         account=self.store.fingerprint('codex|'+account_id)
-        files=list((self.home/'sessions').rglob('*.jsonl'))+list((self.home/'archived_sessions').rglob('*.jsonl'))
-        for path in sorted(files,key=lambda p:p.stat().st_mtime,reverse=True):
+        files=[]
+        for path in list((self.home/'sessions').rglob('*.jsonl'))+list((self.home/'archived_sessions').rglob('*.jsonl')):
+            try:files.append((path.stat().st_mtime,path))
+            except OSError:continue
+        for _,path in sorted(files,key=lambda item:item[0],reverse=True):
             try:self.scan_file(path,account)
-            except (OSError,ValueError):continue
+            except (OSError,ValueError,sqlite3.Error):continue

@@ -1,0 +1,268 @@
+{
+  "schema": 1,
+  "purpose": "Deterministic native selection fixtures executed by MenuBar.swift --selection-fixture PATH and mirrored by web selection tests. Times are seconds relative to fixed_now_epoch; no live quota values.",
+  "runner": {
+    "fixed_now_epoch": 1800000000,
+    "window_defaults": {
+      "status": "fresh",
+      "observed_age_seconds": 0,
+      "fresh_until_in_seconds": 3600,
+      "resets_in_seconds": 3600
+    },
+    "field_semantics": {
+      "observed_age_seconds": "observed_at = fixed_now - observed_age_seconds",
+      "observed_offset_seconds": "observed_at = fixed_now + observed_offset_seconds (overrides observed_age_seconds)",
+      "fresh_until_in_seconds": "fresh_until = fixed_now + fresh_until_in_seconds",
+      "resets_in_seconds": "resets_at = fixed_now + resets_in_seconds",
+      "eta_in_seconds": "velocity.eta_exhaustion_at = fixed_now + eta_in_seconds; windows with eta default to observed confidence and exhausts_before_reset=true",
+      "evaluated_after_seconds": "selection is evaluated at fixed_now + evaluated_after_seconds (default 0)"
+    }
+  },
+  "freshness": {
+    "maximum_age_seconds": 90,
+    "future_tolerance_seconds": 5,
+    "note": "Matches web/app.js freshnessDeadline: observed > now+5000ms is invalid, so 6 seconds in the future is stale.",
+    "declared_deadline": "minimum of observed_at plus capped age and a parseable fresh_until",
+    "invalid": [
+      "missing observed_at",
+      "malformed observed_at",
+      "observed_at more than 5 seconds in the future",
+      "reset at or before now"
+    ]
+  },
+  "cases": [
+    {
+      "name": "fresh at 89 seconds",
+      "windows": [
+        {
+          "id": "a",
+          "remaining_pct": 75,
+          "observed_age_seconds": 89
+        }
+      ],
+      "expected_window_id": "a",
+      "expected_state": "fresh",
+      "expected_remaining_pct": 75,
+      "expected_last_known_pct": null
+    },
+    {
+      "name": "stale at 91 seconds despite later declared deadline",
+      "windows": [
+        {
+          "id": "a",
+          "remaining_pct": 75,
+          "observed_age_seconds": 91,
+          "fresh_until_in_seconds": 86400
+        }
+      ],
+      "expected_window_id": "a",
+      "expected_state": "stale",
+      "expected_remaining_pct": null
+    },
+    {
+      "name": "declared deadline wins when earlier",
+      "windows": [
+        {
+          "id": "a",
+          "remaining_pct": 75,
+          "observed_age_seconds": 0,
+          "fresh_until_in_seconds": 10
+        }
+      ],
+      "evaluated_after_seconds": 11,
+      "expected_window_id": "a",
+      "expected_state": "stale",
+      "expected_remaining_pct": null
+    },
+    {
+      "name": "observed 4 seconds in future within tolerance",
+      "windows": [
+        {
+          "id": "a",
+          "remaining_pct": 75,
+          "observed_offset_seconds": 4
+        }
+      ],
+      "expected_window_id": "a",
+      "expected_state": "fresh",
+      "expected_remaining_pct": 75
+    },
+    {
+      "name": "observed 6 seconds in future is invalid",
+      "windows": [
+        {
+          "id": "a",
+          "remaining_pct": 75,
+          "observed_offset_seconds": 6
+        }
+      ],
+      "expected_window_id": "a",
+      "expected_state": "stale",
+      "expected_remaining_pct": null
+    },
+    {
+      "name": "malformed observed timestamp is invalid",
+      "windows": [
+        {
+          "id": "a",
+          "remaining_pct": 75,
+          "observed_at": "not-a-date"
+        }
+      ],
+      "expected_window_id": "a",
+      "expected_state": "stale",
+      "expected_remaining_pct": null
+    },
+    {
+      "name": "exhausted before runout",
+      "windows": [
+        {
+          "id": "exhausted",
+          "remaining_pct": 0
+        },
+        {
+          "id": "risk",
+          "remaining_pct": 60,
+          "eta_in_seconds": 900,
+          "resets_in_seconds": 3600
+        }
+      ],
+      "expected_window_id": "exhausted",
+      "expected_state": "fresh",
+      "expected_remaining_pct": 0
+    },
+    {
+      "name": "earliest valid runout before minimum",
+      "windows": [
+        {
+          "id": "low",
+          "remaining_pct": 10
+        },
+        {
+          "id": "risk-late",
+          "remaining_pct": 40,
+          "eta_in_seconds": 2700,
+          "resets_in_seconds": 3600
+        },
+        {
+          "id": "risk-early",
+          "remaining_pct": 60,
+          "eta_in_seconds": 900,
+          "resets_in_seconds": 3600
+        }
+      ],
+      "expected_window_id": "risk-early",
+      "expected_state": "fresh",
+      "expected_remaining_pct": 60
+    },
+    {
+      "name": "invalid runout in past falls back to minimum",
+      "windows": [
+        {
+          "id": "risk",
+          "remaining_pct": 60,
+          "eta_in_seconds": -10,
+          "resets_in_seconds": 3600
+        },
+        {
+          "id": "low",
+          "remaining_pct": 10
+        }
+      ],
+      "expected_window_id": "low",
+      "expected_state": "fresh",
+      "expected_remaining_pct": 10
+    },
+    {
+      "name": "runout at reset is invalid and falls back to minimum",
+      "windows": [
+        {
+          "id": "risk",
+          "remaining_pct": 60,
+          "eta_in_seconds": 3600,
+          "resets_in_seconds": 3600
+        },
+        {
+          "id": "low",
+          "remaining_pct": 10
+        }
+      ],
+      "expected_window_id": "low",
+      "expected_state": "fresh",
+      "expected_remaining_pct": 10
+    },
+    {
+      "name": "runout after reset is invalid and falls back to minimum",
+      "windows": [
+        {
+          "id": "risk",
+          "remaining_pct": 60,
+          "eta_in_seconds": 7200,
+          "resets_in_seconds": 3600
+        },
+        {
+          "id": "low",
+          "remaining_pct": 10
+        }
+      ],
+      "expected_window_id": "low",
+      "expected_state": "fresh",
+      "expected_remaining_pct": 10
+    },
+    {
+      "name": "finite before unlimited",
+      "windows": [
+        {
+          "id": "cap",
+          "status": "unlimited",
+          "remaining_pct": null
+        },
+        {
+          "id": "finite",
+          "remaining_pct": 80
+        }
+      ],
+      "expected_window_id": "finite",
+      "expected_state": "fresh",
+      "expected_remaining_pct": 80
+    },
+    {
+      "name": "explicit unlimited alone",
+      "windows": [
+        {
+          "id": "cap",
+          "status": "unlimited",
+          "remaining_pct": null
+        }
+      ],
+      "expected_window_id": "cap",
+      "expected_state": "unlimited",
+      "expected_remaining_pct": null,
+      "expected_last_known_pct": null
+    },
+    {
+      "name": "last known is history only",
+      "windows": [
+        {
+          "id": "history",
+          "status": "stale",
+          "remaining_pct": null,
+          "last_known_remaining_pct": 42,
+          "observed_age_seconds": 3600
+        }
+      ],
+      "expected_window_id": "history",
+      "expected_state": "stale",
+      "expected_remaining_pct": null,
+      "expected_last_known_pct": 42,
+      "historical_meter": false,
+      "historical_forecast": false
+    }
+  ],
+  "decode": {
+    "malformed_provider_entries": "drop",
+    "malformed_window_entries": "drop",
+    "maximum_response_bytes": 1048576,
+    "bundled_missing_source_fingerprint": "fail closed"
+  }
+}

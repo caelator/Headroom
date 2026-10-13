@@ -46,6 +46,11 @@ class CursorTests(unittest.TestCase):
         with self.assertRaises(ValueError):cursor.normalize(summary(),{'sub':'auth0|other'},self.store,'demo-user')
         first=cursor.normalize(summary(),{},self.store,'demo-user')['account_ref']
         second=cursor.normalize(summary(),{},self.store,'other')['account_ref'];self.assertNotEqual(first,second)
+    def test_case_sensitive_accounts_do_not_share_history_scope(self):
+        upper=cursor.normalize(summary(),{},self.store,'user_AbC')['account_ref']
+        lower=cursor.normalize(summary(),{},self.store,'user_abc')['account_ref']
+        self.assertNotEqual(upper,lower)
+        self.assertNotEqual(lower,self.store.fingerprint('cursor|user_abc'))
     def test_unknown_tier_drops_personal_fields(self):
         s=summary();s['membershipType']='private@example.invalid';s['accessToken']='never-store'
         result=cursor.normalize(s,{'sub':'demo-user','email':'private@example.invalid'},self.store,'demo-user')
@@ -102,6 +107,27 @@ class CursorTests(unittest.TestCase):
             with patch.object(cursor,'credentials',return_value=('cookie','demo-user',None)),patch.object(cursor,'request_json',side_effect=error):
                 result=cursor.collect(self.store)
             self.assertEqual(result['error']['code'],expected);self.assertNotIn('private-token',json.dumps(result))
+    def test_production_path_requires_confirmed_account(self):
+        with patch.object(cursor,'credentials',return_value=('cookie','demo-user',None)),patch.object(cursor,'request_json',side_effect=[summary(),{}]):
+            result=cursor.collect(self.store)
+        self.assertFalse(result['auth_verified']);self.assertEqual(result['windows'],[])
+    def test_reported_fallback_windows_do_not_invent_missing_primary(self):
+        for individual,team,requests,key in [({'overall':{'used':20,'limit':100}},None,None,'individual-overall'),
+                ({},{'pooled':{'used':20,'limit':100}},None,'team-pooled'),
+                ({},None,{'gpt4':{'numRequests':20,'maxRequestUsage':100}},'legacy-requests')]:
+            s=summary();s['individualUsage']=individual
+            if team:s['teamUsage']=team
+            result=cursor.normalize(s,{'sub':'demo-user'},self.store,'demo-user',requests=requests)
+            self.assertEqual([w['id'] for w in result['windows']],[key]);self.assertEqual(result['status'],'verified')
+    def test_configured_token_rotation_preserves_stable_scope(self):
+        file=self.root/'.config/codexbar/config.json';file.parent.mkdir(parents=True)
+        def reference(value,org='org'):
+            file.write_text(json.dumps({'providers':[{'id':'cursor','tokenAccounts':{'activeIndex':0,'accounts':[
+                {'id':'stable','token':'demo-user%3A%3A'+value,'organizationId':org}]}}]}))
+            with patch.object(Path,'home',return_value=self.root),patch.object(cursor,'_read_app_token',side_effect=PermissionError):
+                return cursor.credentials(self.store)[2]
+        first=reference(token());second=reference(token(expires=time.time()+7200))
+        self.assertEqual(first,second);self.assertNotEqual(first,reference(token(),'other'))
 
 
 if __name__=='__main__':unittest.main()

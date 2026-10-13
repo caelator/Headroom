@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit
 import urllib.error
-from .analytics import iso, number, utc_now
+from .analytics import iso, number, utc_now,plausible_reset
 from .provider_http import request_json
 
 SOURCE = 'zai_coding_api'
@@ -96,21 +96,21 @@ def normalize(payload,store,key,region,observed_at=None,organization=None,projec
         used=number(raw.get('percentage'))
         if used is not None and used<0:used=None
         allowance,current,remaining=(number(raw.get(k)) for k in ('usage','currentValue','remaining'))
-        if allowance is not None and allowance>0:
+        if used is None and 'percentage' not in raw and allowance is not None and allowance>0:
             observations=[]
             if current is not None and current>=0:observations.append(current)
             if remaining is not None and 0<=remaining<=allowance:observations.append(allowance-remaining)
-            if observations:used=max(observations)*100/allowance
+            if observations and (len(observations)==1 or abs(observations[0]-observations[1])*100/allowance<=1):
+                used=max(observations)*100/allowance
         known=used is not None
         reset=None;epoch=number(raw.get('nextResetTime'))
-        if epoch is not None and epoch>0:
+        if epoch is not None and 946684800000<=epoch<=32503680000000:
             try:
                 reset=datetime.fromtimestamp(float(epoch/1000),timezone.utc)
-                if minutes==300 and reset>utc_now()+timedelta(hours=5,minutes=1):reset=None
             except (ValueError,OverflowError,OSError):pass
         label='MCP' if kind=='TIME_LIMIT' else '5-hour' if minutes==300 else 'Weekly' if minutes==10080 else 'Coding quota'
         windows.append({'id':key_id,'label':label,'used_pct':float(used) if known else None,
-            'remaining_pct':float(max(0,100-used)) if known else None,'resets_at':iso(reset) if reset else None,
+            'remaining_pct':float(max(0,100-used)) if known else None,'resets_at':plausible_reset(iso(reset),stamp,minutes) if reset else None,
             'window_minutes':minutes,'status':'fresh' if known else 'unknown','observed_at':stamp,'source':SOURCE})
     tier=next((data.get(k) for k in ('planName','plan','plan_type','packageName','level')
                if isinstance(data.get(k),str) and data[k].strip() and len(data[k])<=80

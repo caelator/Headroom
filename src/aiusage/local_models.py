@@ -235,8 +235,8 @@ class Store:
             cutoff = current.astimezone(bogota).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(dt.timezone.utc)
         else:
             cutoff = current - dt.timedelta(days=days)
-        where = 'WHERE timestamp>=?' if days else ''
-        args = (cutoff.isoformat().replace('+00:00', 'Z'),) if days else ()
+        where = 'WHERE julianday(timestamp)>=julianday(?) AND julianday(timestamp)<=julianday(?)' if days else ''
+        args = (cutoff.isoformat().replace('+00:00', 'Z'),current.isoformat().replace('+00:00', 'Z')) if days else ()
         columns = ['model', 'max(provider) AS provider', 'count(*) AS requests',
                    'max(timestamp) AS last_seen', 'group_concat(DISTINCT source) AS sources',
                    "sum(status='in_progress') AS active",

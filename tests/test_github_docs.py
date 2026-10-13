@@ -127,5 +127,26 @@ class GitHubDocsTests(unittest.TestCase):
         self.assertIn('version `0.4.0`',self.run_git('show','HEAD:README.md'))
         docs.pre_push(self.root,self.push_line(self.run_git('rev-parse','HEAD')))
 
+    def test_real_push_blocks_stale_commit_without_hosted_jobs(self):
+        for path in ['scripts/github_docs.py','.githooks/pre-push']:
+            target=self.root/path;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(PROJECT/path,target)
+            if path.startswith('.githooks/'):target.chmod(0o755)
+        self.sync();valid=self.commit()
+        remote=self.root.parent/(self.root.name+'-remote.git')
+        self.addCleanup(shutil.rmtree,remote,True)
+        subprocess.run(['git','init','--bare','-q',str(remote)],check=True)
+        self.run_git('remote','add','origin',str(remote));self.run_git('config','core.hooksPath','.githooks')
+        self.run_git('push','origin','HEAD:refs/heads/main')
+        project=self.root/'pyproject.toml';project.write_text(project.read_text().replace('0.1.0','0.2.0'))
+        stale=self.commit();self.sync()
+        result=subprocess.run(['git','push','origin','HEAD:refs/heads/main'],cwd=self.root,capture_output=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn(b'README facts are stale',result.stderr)
+        actual=subprocess.check_output(['git','--git-dir',str(remote),'rev-parse','refs/heads/main']).decode().strip()
+        self.assertEqual(actual,valid);self.assertNotEqual(actual,stale)
+        self.commit();self.run_git('push','origin','HEAD:refs/heads/main')
+        actual=subprocess.check_output(['git','--git-dir',str(remote),'rev-parse','refs/heads/main']).decode().strip()
+        self.assertEqual(actual,self.run_git('rev-parse','HEAD'))
+
 
 if __name__=='__main__':unittest.main()

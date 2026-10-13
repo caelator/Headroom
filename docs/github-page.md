@@ -2,6 +2,8 @@
 
 GitHub renders the README, documentation, images, and repository files from the pushed default branch. Headroom adds local Git hooks so public source facts cannot drift from the revision being published. No hosted job or scheduled automation is involved.
 
+Normal pushes to `main` therefore publish the matching README and assets together with the code. Pushing another branch does not change GitHub's default-branch page. There is no separate site deployment to maintain.
+
 ## Activate in a clone
 
 ```sh
@@ -34,6 +36,14 @@ make preview-receipt PYTHON=python3
 ```
 
 Stage the changed source, README, image, and receipt together and commit normally. The receipt records only source/image hashes; it never includes live account data. Do not re-record an old image to clear the check without verifying that it depicts the new frontend.
+
+The reproducible preview server uses temporary storage, synthetic observations and no provider collection:
+
+```sh
+PYTHONPATH=src python3 scripts/preview.py
+```
+
+Open `http://127.0.0.1:18793/`, inspect the rendered dashboard and capture it. Stop the server afterward; its temporary database is disposable.
 
 The checks can be run explicitly against a candidate commit:
 

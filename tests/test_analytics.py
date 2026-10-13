@@ -70,6 +70,10 @@ class AnalyticsTests(unittest.TestCase):
         self.assertIsNone(r['eta_exhaustion_at']);self.assertIsNone(r['exhausts_before_reset'])
     def test_expired_window(self):
         self.assertEqual(velocity([],current(resets_at=iso(NOW)),NOW)['confidence'],'unavailable')
+    def test_missing_cycle_boundary_withholds_rates_and_forecasts(self):
+        result=velocity(points([70,75,80],resets_at=None),current(resets_at=None),NOW)
+        self.assertEqual(result['confidence'],'unavailable')
+        self.assertIsNone(result['pct_per_hour']);self.assertIsNone(result['eta_exhaustion_at'])
     def test_future_invalid_and_missing_points_ignored(self):
         p=points([70,75,80]);p[-1]['observed_at']=iso(NOW+timedelta(minutes=5))
         p.append({**current(),'observed_at':'invalid','used_pct':'NaN'})

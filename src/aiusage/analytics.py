@@ -36,6 +36,15 @@ def percentage(value):
     return result if result is not None and result >= 0 else None
 
 
+def plausible_reset(value,observed_at,window_minutes=None):
+    reset=timestamp(value);observed=timestamp(observed_at)
+    if reset is None or observed is None:return None
+    # Keep plausible past resets so consumers can withdraw expired readings.
+    if abs((reset-observed).total_seconds())>10*366*86400:return None
+    if type(window_minutes) is int and window_minutes>0 and reset>observed+timedelta(minutes=window_minutes,seconds=60):return None
+    return iso(reset)
+
+
 def velocity(points, current, now=None, max_gap_seconds=1800):
     now = now or utc_now()
     result = {'pct_per_hour': None, 'points': 0, 'observed_span_seconds': 0,
@@ -54,6 +63,11 @@ def velocity(points, current, now=None, max_gap_seconds=1800):
     if reset and reset > now:
         hours = Decimal(str((reset-now).total_seconds())) / 3600
         result['safe_pace_pct_per_hour'] = float(remain / hours)
+    else:
+        # Without an explicit cycle boundary, monotone samples cannot prove
+        # that quota did not reset between observations.
+        result['confidence']='unavailable'
+        return result
     clean = []
     current_account = current.get('account_ref')
     if not current_account:

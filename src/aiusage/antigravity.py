@@ -13,7 +13,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from .analytics import iso, number, timestamp
+from .analytics import iso, number, timestamp,plausible_reset
 from .provider_http import NoRedirect
 
 SERVICE = '/exa.language_server_pb.LanguageServerService/'
@@ -159,7 +159,7 @@ def _window(key, label, fraction, reset, minutes, stamp, disabled=False):
             except (ValueError, OverflowError, OSError): pass
     return {'id': key, 'label': label, 'used_pct': float(100 - value * 100) if known else None,
             'remaining_pct': float(value * 100) if known else None,
-            'resets_at': iso(deadline) if deadline else None, 'window_minutes': minutes,
+            'resets_at': plausible_reset(iso(deadline),stamp,minutes) if deadline else None, 'window_minutes': minutes,
             'status': 'fresh' if known else 'unknown', 'observed_at': stamp, 'source': SOURCE}
 
 

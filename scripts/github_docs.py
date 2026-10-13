@@ -109,6 +109,12 @@ def facts(source):
             for key,value in zip(node.keys,node.values):
                 if isinstance(key,ast.Constant) and key.value=='LSMinimumSystemVersion' and isinstance(value,ast.Constant):minimum=str(value.value)
     paths=[p for p in source.modes if p.startswith(SOURCE_ROOTS) or p in ('pyproject.toml','Makefile','LICENSE')]
+    if 'src/aiusage/release.py' in source.modes:
+        release=constants(source,'src/aiusage/release.py')
+        roots=release['ROOTS'];top=release['TOP_FILES'];suffixes=release['SUFFIXES']
+        paths=[p for p in source.modes if p in top or
+               (p.split('/')[0] in roots and Path(p).suffix in suffixes[p.split('/')[0]]
+                and '__pycache__' not in Path(p).parts and not any(part.startswith('.') for part in Path(p).parts[1:]))]
     return project,registry,providers,floating,minimum.removesuffix('.0'),source.digest(paths)
 
 

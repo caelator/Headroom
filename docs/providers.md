@@ -31,6 +31,12 @@ Codex reads OAuth `tokens` from the active `CODEX_HOME/auth.json` (default `~/.c
 
 Stored quota history and the private HMAC salt are preserved. Equivalent account/window identities retain continuity where the protocol supplies the same binding. A changed account, credential scope, allowance identity, reset, or cadence starts a new forecast segment. Historical source labels remain historical evidence; they are not rewritten as new collector measurements.
 
+Cursor requires a confirmed authenticated account subject. Native scope v2 and configured-session scope v3 preserve its exact case; rotating a configured token does not replace a confirmed account/org/workspace identity. These stricter scope versions can intentionally start a new forecast segment after upgrading. Old history remains stored under its original scope.
+
+z.ai's valid provider-reported percentage takes precedence over counters. Counter-derived percentages require a known denominator in the same units and consistent counter readings. Implausible reset epochs are withheld. Claude discards its in-memory profile association after authentication fails and rereads it after successful sign-in; no raw access token is held in the profile cache key.
+
+Production collectors run in separate persistent provider processes with a 45-second absolute deadline. Persistent processes keep short-lived caches and credential-approval latches, while a blocked provider can be terminated independently. Explicit Refresh now clears credential latches but cannot bypass upstream Retry-After backoff.
+
 ## Local verification
 
 ```sh

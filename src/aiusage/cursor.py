@@ -11,7 +11,7 @@ import sqlite3
 import time
 from urllib.parse import quote, unquote
 import urllib.error
-from .analytics import iso, number, timestamp
+from .analytics import iso, number, timestamp,plausible_reset
 from .provider_http import request_json
 
 SOURCE='cursor_usage_api'
@@ -112,8 +112,8 @@ def credentials(store):
         values=accounts.get('accounts') or [];index=accounts.get('activeIndex',0)
         if type(index) is not int or not isinstance(values,list) or not 0<=index<len(values):raise ValueError('Invalid selected session')
         account=values[index];cookie,subject=_cookie(account.get('token'))
-        scope='|'.join(str(account.get(k,'')) for k in ('id','token','organizationId','workspaceID'))
-        return cookie,subject,store.fingerprint('cursor|configured|'+scope)
+        scope=json.dumps([subject,account.get('id'),account.get('organizationId'),account.get('workspaceID')],separators=(',',':'))
+        return cookie,subject,store.fingerprint('cursor|configured-v3|'+scope)
     except (OSError,ValueError,TypeError,AttributeError,StopIteration,sqlite3.Error):
         try:
             cookie,subject=_existing_session()
@@ -126,20 +126,22 @@ def _pct(value):
     return value if value is not None and value>=0 else None
 
 
-def normalize(summary,user,store,subject,observed_at=None,legacy_ref=None,requests=None):
+def normalize(summary,user,store,subject,observed_at=None,legacy_ref=None,requests=None,require_identity=False):
     if not isinstance(summary,dict) or not isinstance(user,dict):raise ValueError('Cursor response objects required')
     confirmed=_subject(user.get('sub'))
+    if require_identity and confirmed is None:raise ValueError('Cursor account identity unavailable')
     if confirmed and confirmed!=subject:raise ValueError('Cursor account mismatch')
     stamp=observed_at or iso();end=timestamp(summary.get('billingCycleEnd'));start=timestamp(summary.get('billingCycleStart'))
     minutes=int((end-start).total_seconds()/60) if start and end and end>start else None
     if minutes is not None and not 0<minutes<=5270400:minutes=None
     individual=summary.get('individualUsage');individual=individual if isinstance(individual,dict) else {}
+    plan_reported=isinstance(individual.get('plan'),dict)
     plan=individual.get('plan');plan=plan if isinstance(plan,dict) else {}
     windows=[]
     def add(key,label,used):
         windows.append({'id':key,'label':label,'used_pct':float(used) if used is not None else None,
             'remaining_pct':float(max(0,100-used)) if used is not None else None,
-            'resets_at':iso(end) if end else None,'window_minutes':minutes,
+            'resets_at':plausible_reset(iso(end),stamp,minutes) if end else None,'window_minutes':minutes,
             'status':'fresh' if used is not None else 'unknown','observed_at':stamp,'source':SOURCE})
     def ratio(block):
         if not isinstance(block,dict) or block.get('enabled') is False:return None
@@ -148,7 +150,7 @@ def normalize(summary,user,store,subject,observed_at=None,legacy_ref=None,reques
     total=_pct(plan.get('totalPercentUsed')) if plan.get('enabled') is not False else None
     if total is None:total=ratio(plan)
     # Never average independent pool percentages into a made-up plan total.
-    add('primary','Included plan',total)
+    if plan_reported:add('primary','Included plan',total)
     for key,label,field in [('secondary','Cursor models','autoPercentUsed'),('tertiary','Third-party models','apiPercentUsed')]:
         if field in plan:add(key,label,_pct(plan[field]) if plan.get('enabled') is not False else None)
     if not plan and isinstance(individual.get('overall'),dict):
@@ -170,7 +172,7 @@ def normalize(summary,user,store,subject,observed_at=None,legacy_ref=None,reques
     return {'id':'cursor','observed_at':stamp,'source':SOURCE,
         'status':'verified' if fresh and all(w['status']=='fresh' for w in windows) else 'partial',
         'verified_tier':tier,'auth_method':'session','auth_verified':True,
-        'account_ref':legacy_ref or store.fingerprint('cursor|'+subject.lower()), 'windows':windows,'wallet':None,
+        'account_ref':legacy_ref or store.fingerprint('cursor|account-v2|'+subject), 'windows':windows,'wallet':None,
         'error':None if fresh else {'code':'no_quota_data','message':'Cursor authenticated but did not report a measured allowance.'}}
 
 
@@ -190,7 +192,7 @@ def collect(store):
         if not isinstance(plan,dict) or not any(k in plan for k in ('totalPercentUsed','used','autoPercentUsed','apiPercentUsed')):
             try:requests=request_json(BASE+'/api/usage?user='+quote(subject,safe=''),headers=headers,timeout=5)
             except (OSError,ValueError,TypeError):pass
-        return normalize(summary,user,store,subject,sent,legacy_ref,requests)
+        return normalize(summary,user,store,subject,sent,legacy_ref,requests,require_identity=True)
     except PermissionError as error:
         code=str(error) if str(error) in ('app_auth_expired','app_auth_missing','app_auth_format','app_auth_unavailable') else 'auth_required'
         return failure(code,'Renew sign-in in the Cursor desktop app to connect usage.','auth_required')

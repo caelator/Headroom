@@ -1,6 +1,6 @@
 PYTHON ?= /opt/homebrew/opt/python@3.11/libexec/bin/python3
 
-.PHONY: run check install docs hooks preview-receipt
+.PHONY: run check install docs hooks preview-receipt release-check install-native
 run:
 	PYTHONPATH=src $(PYTHON) -m aiusage.server
 
@@ -22,3 +22,9 @@ preview-receipt:
 
 install:
 	$(PYTHON) scripts/install.py
+
+install-native:
+	$(PYTHON) scripts/install_menubar.py --show-widget
+
+release-check:
+	$(PYTHON) scripts/release_check.py

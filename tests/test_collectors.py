@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import threading
+import time
 from unittest.mock import patch
 from aiusage.collectors import Collectors
 from aiusage.store import Store
@@ -8,7 +10,7 @@ from aiusage.analytics import iso
 class CollectorTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
-        self.c=Collectors(Store(self.temp.name))
+        self.c=Collectors(Store(self.temp.name),isolated=False)
     def test_rate_limit_backoff_is_independent_and_clears_on_success(self):
         failure={'id':'claude','status':'error','observed_at':iso(),'windows':[],
             'error':{'code':'rate_limited','message':'Retrying'},'retry_after_seconds':60}
@@ -46,5 +48,18 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(saved['status'],'partial')
         self.assertEqual(saved['error']['code'],'identity_unverified')
         self.assertEqual(saved['windows'][0]['velocity']['confidence'],'unavailable')
+    def test_refresh_does_not_bypass_rate_limit_deadline(self):
+        self.c.next_allowed['codex']=time.monotonic()+60
+        with patch.object(self.c,'fetch') as fetch:
+            thread=threading.Thread(target=self.c.run,args=('codex',));thread.start()
+            self.c.request_refresh();time.sleep(.03);self.c.stop.set();thread.join(timeout=1)
+        fetch.assert_not_called();self.assertFalse(thread.is_alive())
+    def test_storage_failure_does_not_kill_collector_owner(self):
+        attempted=threading.Event()
+        def fail(provider):attempted.set();self.c.stop.set();raise OSError('private-sentinel')
+        with patch.object(self.c,'fetch',side_effect=fail):
+            thread=threading.Thread(target=self.c.run,args=('codex',));thread.start()
+            self.assertTrue(attempted.wait(1));self.c.events['codex'].set();thread.join(timeout=1)
+        self.assertFalse(thread.is_alive());self.assertEqual(self.c.busy,set())
 
 if __name__=='__main__':unittest.main()
