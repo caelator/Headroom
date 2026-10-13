@@ -58,6 +58,10 @@ def main():
         print(json.dumps(probe(options.provider),indent=2));return
     report={'service':agent_status('com.xxx.aiusage'),'menu':agent_status('com.xxx.codex-usage-menu')}
     try:
+        native=json.loads((Path.home()/'.local/share/aiusage/native-status.json').read_text())
+        report['native']={key:native.get(key) for key in ('widget_visible','stale','providers','measured_providers')}
+    except (OSError,ValueError,AttributeError):pass
+    try:
         with urllib.request.urlopen('http://127.0.0.1:8793/health',timeout=5) as response:data=json.load(response)
         report['refresh_seconds']=data['refresh_interval_seconds']
         report['max_age_seconds']=data['freshness_policy']['max_age_seconds']

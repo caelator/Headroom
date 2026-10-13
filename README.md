@@ -6,46 +6,62 @@
 
 See how much capacity you have left, how quickly you are using it, and when each allowance resets.
 
+<!-- headroom:badges:start -->
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-222222?logo=apple)](#requirements)
 [![MIT license](https://img.shields.io/badge/License-MIT-397A61)](LICENSE)
+<!-- headroom:badges:end -->
 
 [Get started](#quick-start) · [Providers](#supported-providers) · [How measurement works](docs/metrics.md) · [Contribute](CONTRIBUTING.md)
 
 </div>
 
-Headroom brings **Codex / ChatGPT, Muse, z.ai, Cursor, Antigravity, and Claude** into one view. It reads existing authenticated provider connections, keeps quota history on your machine, and shows reset-aware estimates when the observations support them. A native macOS menu companion keeps the most constrained measured plan within reach.
+<!-- headroom:overview:start -->
+Headroom brings **Codex / ChatGPT, Muse, z.ai, Cursor, Antigravity, and Claude** into one view. It reads existing authenticated provider connections, keeps quota history on your machine, and shows reset-aware estimates when the observations support them. A native macOS menu companion and floating desktop widget keep current capacity within reach.
+<!-- headroom:overview:end -->
 
 ![Headroom dashboard with synthetic example data](docs/assets/dashboard.jpg)
 
 *The preview renders the real dashboard with synthetic data. Percentages, tiers, and forecasts are illustrative.*
 
+<!-- headroom:snapshot:start -->
+**Current source:** version `0.1.0` · 6 built-in provider collectors · readings expire after 90 seconds · default polling 30 seconds.
+
+<sub>These facts are refreshed from the committed source. Source fingerprint: `0b3fbffbf2ce0464`.</sub>
+<!-- headroom:snapshot:end -->
+
 ## What you get
 
-- **Six plans at a glance:** remaining allowance, provider-reported tier, connection state, and the reset for the limiting window.
+<!-- headroom:features:start -->
+- **6 plans at a glance:** remaining allowance, provider-reported tier, connection state, and the reset for the limiting window.
 - **Observed burn and safe pace:** percentage points consumed per hour, conditional runout estimates, and the pace that would preserve quota until reset.
 - **Quota history:** explore each provider and allowance over time; export stored snapshots as CSV with account identities omitted.
 - **Local model accounting:** per-model receipts, known token counts, requests, and rolling token velocity, kept separate from subscription quota.
 - **Freshness you can see:** expired readings and connection failures withdraw current percentages and forecasts while keeping labelled history.
-- **Native menu indicator:** a macOS companion showing the smallest current remaining percentage and opening the dashboard.
+- **Native menu indicator:** a macOS companion showing current remaining quota and opening the dashboard.
+- **Floating desktop widget:** a draggable quota panel that stays visible across desktops. Hide or show it from the menu bar, and open the dashboard from the widget.
 - **Local storage:** SQLite history, private file permissions, and an HTTP service bound to `127.0.0.1`.
+<!-- headroom:features:end -->
 
 ## Quick start
 
 ### Requirements
 
-- **macOS 13+** for the supported provider integrations and menu companion.
-- **Python 3.11+**. The Python runtime uses the standard library; there are no third-party runtime dependencies.
+<!-- headroom:requirements:start -->
+- **macOS 13+** for the supported provider integrations and native companion.
+- **Python 3.11+** (`>=3.11`). The Python runtime uses the standard library; there are no third-party runtime dependencies.
 - **Node.js** to run the local JavaScript checks.
 - **Codex, Cursor, and Antigravity**, signed in through their official clients, for the providers you use. Headroom includes its provider collectors; no CodexBar installation is needed.
 - **Muse Code** and **Claude Code**, signed in through their official clients, for their direct OAuth collectors.
-- **Xcode command-line tools** if you want the native menu companion (`xcode-select --install`).
+- **Xcode command-line tools** if you want the native companion (`xcode-select --install`).
+<!-- headroom:requirements:end -->
 
 Connect the providers you use; unavailable providers stay visible with their connection status. You do not need all six subscriptions to open the dashboard.
 
 ```sh
 git clone https://github.com/caelator/Headroom.git
 cd Headroom
+make hooks PYTHON=python3
 make check PYTHON=python3
 make run PYTHON=python3
 ```
@@ -65,16 +81,22 @@ The first command registers the dashboard as a per-user LaunchAgent. The second 
 
 The menu installer replaces the owned `com.xxx.codex-usage-menu` companion and backs up its previous plist when present. Read [operations and recovery](docs/operations.md) for service names, diagnostics, backups, and rollback.
 
+<!-- headroom:native-note:start -->
+The floating widget appears on the first launch of the native companion. Drag it to your preferred position; its position and visibility preference are remembered. Use the Headroom menu to hide or show it. Collection continues while the widget is hidden.
+<!-- headroom:native-note:end -->
+
 ## Supported providers
 
-| Provider | Quota source | Connection setup |
+<!-- headroom:providers:start -->
+| Provider | Built-in collector | Account / quota portal |
 | --- | --- | --- |
-| **Codex / ChatGPT** | Built-in Codex OAuth usage collector | Sign in to Codex. |
-| **Muse** | Direct Muse Code account quota endpoint | Run `muse login`, then **Refresh Muse connection** in Settings. |
-| **z.ai** | Built-in coding-plan quota API | Configure the existing coding-plan API key in the environment or supported coding client. |
-| **Cursor** | Built-in authenticated usage APIs | Sign in to the Cursor desktop app. |
-| **Antigravity** | Built-in local app quota endpoint | Keep the Antigravity app signed in and running. |
-| **Claude** | Direct Claude OAuth usage and profile endpoints | Sign in to Claude Code; existing credential renewal is picked up on subsequent polls. |
+| **Codex / ChatGPT** | [codex.py](src/aiusage/codex.py) | [Open provider portal](https://chatgpt.com/codex/settings/usage) |
+| **Muse** | [muse.py](src/aiusage/muse.py) | [Open provider portal](https://dev.meta.ai/billing) |
+| **z.ai** | [zai.py](src/aiusage/zai.py) | [Open provider portal](https://z.ai/manage-apikey/coding-plan/personal/my-plan) |
+| **Cursor** | [cursor.py](src/aiusage/cursor.py) | [Open provider portal](https://cursor.com/settings) |
+| **Antigravity** | [antigravity.py](src/aiusage/antigravity.py) | [Open provider portal](https://antigravity.google/) |
+| **Claude** | [claude.py](src/aiusage/claude.py) | [Open provider portal](https://claude.ai/settings/usage) |
+<!-- headroom:providers:end -->
 
 Credentials stay in the provider's existing app or Keychain. Headroom does not ask you to paste passwords, tokens, cookies, or API keys into the dashboard. Provider tier labels are distinct from user-declared plan claims; a verified tier does not establish that it is the provider's highest available plan.
 
@@ -122,6 +144,7 @@ Headroom does not retain conversation text, raw account profiles, credentials, o
 | [Muse collector protocol](docs/muse-protocol.md) | Direct OAuth integration and sanitized response handling. |
 | [Built-in provider collectors](docs/providers.md) | Authentication sources, integration boundaries, and migration. |
 | [Third-party notices](THIRD_PARTY_NOTICES.md) | CodexBar protocol attribution and upstream license. |
+| [GitHub page upkeep](docs/github-page.md) | Local source-derived README refresh and checks on every push. |
 | [Contributing](CONTRIBUTING.md) | Source layout, local checks, and changes to provider adapters. |
 | [Security policy](SECURITY.md) | Private vulnerability reports and information to omit. |
 | [Bug reports](https://github.com/caelator/Headroom/issues/new?template=bug_report.yml) | Reproducible problems with sanitized diagnostics. |
@@ -130,5 +153,7 @@ Headroom does not retain conversation text, raw account profiles, credentials, o
 Run `make check PYTHON=python3` before submitting changes. The gate covers Python unit tests, HTTP boundaries, analytics, storage, collectors, receipt accounting, Python compilation, and JavaScript checks. Tests use synthetic fixtures and temporary databases. Passing local checks establishes the tested implementation; live provider availability is a separate operational condition.
 
 Development and verification use local gates. Hosted CI for pushes, pull requests, and schedules is disabled.
+
+Local Git hooks refresh the marked README facts from staged source on commit and verify the exact revision on push. Activate them once per clone with `make hooks PYTHON=python3`. Frontend changes also require an inspected synthetic preview and updated receipt; see [GitHub page upkeep](docs/github-page.md).
 
 Headroom is released under the [MIT license](LICENSE).

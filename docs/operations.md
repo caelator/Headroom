@@ -19,6 +19,14 @@ If Muse OAuth expires, use `muse login` and Meta's normal approval screen, then 
 
 The private data directory contains quota history, settings, a HMAC identity salt, sanitized Muse tier proof and native status. Back it up as a unit so identities and history remain consistent. Use SQLite's backup API or a clean service shutdown for a consistent backup; copying a WAL database without its journal can lose recent observations. Preserve the original model ledger and all historical `work/` receipts.
 
+## Floating desktop widget
+
+Install or update the native companion with `python3 scripts/install_menubar.py`. The installer builds and checks the new executable before replacing the owned companion. The floating widget appears by default on first launch, remains above ordinary app windows across Spaces, and can be dragged by its background.
+
+Hide or show the widget from the Headroom menu. Hiding it keeps the menu indicator and collectors running. Opening `Headroom.app` again also restores a hidden widget. The widget's dashboard button opens the local plan overview at `http://127.0.0.1:8793/`. Only window position and visibility are saved as UI preferences; provider replies and credentials are not saved there.
+
+The widget uses the menu companion's existing poll and expiry timer. A failed connection, expired quota, or passed reset withdraws the affected current percentage. A remaining fresh allowance can still be shown independently. It does not request additional provider credentials or create another background collector.
+
 ## Rollback
 
 To stop the new dashboard while preserving all data:

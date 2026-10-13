@@ -9,6 +9,7 @@ Use Python 3.11+ and Node.js. The Python runtime has no third-party dependencies
 ```sh
 git clone https://github.com/caelator/Headroom.git
 cd Headroom
+make hooks PYTHON=python3
 make check PYTHON=python3
 make run PYTHON=python3
 ```
@@ -30,9 +31,11 @@ The Makefile defaults to Homebrew's Python 3.11 path. Override `PYTHON` for anot
 
 Keep each change focused on one behavior. Describe the trigger, expected result, and local verification in your pull request. Run `make check PYTHON=python3` before submitting. It runs Python unit tests, Python compilation, JavaScript syntax validation, and dashboard regression checks.
 
-For native changes, compile into a temporary directory and run the built companion with `--check`. Building requires Xcode command-line tools. Do not run the installer just to validate a source change: it replaces the local companion and registers a LaunchAgent.
+For native changes, compile into a temporary directory and run the built companion with `--self-test` for deterministic quota freshness checks, then `--check` for decoding the running local service. Building requires Xcode command-line tools. Do not run the installer just to validate a source change: it replaces the local companion and registers a LaunchAgent.
 
 Use local gates only. Do not add, enable, or trigger hosted CI for pushes, pull requests, or schedules, and do not require hosted merge checks. Check for hosted triggers before pushing. Existing tag-triggered artifact build/sign workflows are the only policy exception; this repository currently has none.
+
+Keep the local documentation hooks active. They refresh the marked README sections from staged source before commit and check the exact pushed revision, so a dirty working checkout cannot substitute for public evidence. For frontend changes, regenerate and inspect the synthetic dashboard preview, then run `make preview-receipt PYTHON=python3`. Read [GitHub page upkeep](docs/github-page.md) for partial staging, hook setup, and preview receipts.
 
 ## Provider and measurement contracts
 
